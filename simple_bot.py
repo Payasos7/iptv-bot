@@ -35,17 +35,14 @@ def get_server_location(host):
 
 def get_content_counts(portal, user, pwd):
     try:
-        # Canales en vivo
         url = f"http://{portal}/player_api.php?username={user}&password={pwd}&action=get_live_streams"
         r = requests.get(url, timeout=10)
         live = len(r.json()) if r.status_code == 200 else '?'
         
-        # Películas VOD
         url = f"http://{portal}/player_api.php?username={user}&password={pwd}&action=get_vod_streams"
         r = requests.get(url, timeout=10)
         vod = len(r.json()) if r.status_code == 200 else '?'
         
-        # Series
         url = f"http://{portal}/player_api.php?username={user}&password={pwd}&action=get_series"
         r = requests.get(url, timeout=10)
         series = len(r.json()) if r.status_code == 200 else '?'
@@ -61,11 +58,11 @@ def get_categories(portal, user, pwd):
         if r.status_code == 200:
             cats = r.json()
             result = ""
-            for cat in cats[:10]:
+            for cat in cats[:15]:
                 name = cat.get('category_name', 'Sin nombre')
                 result += f"  ➠ • {name}\n"
-            if len(cats) > 10:
-                result += f"  ➕ ...y {len(cats)-10} categorías más"
+            if len(cats) > 15:
+                result += f"  ➕ ...y {len(cats)-15} categorías más"
             return result
     except:
         pass
@@ -99,7 +96,21 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     global bot_active
     bot_active = True
-    await update.message.reply_text("✅ Bot ACTIVADO - BY LUIS R\n\nEnvía un enlace Xtream o M3U para verificar.")
+    await update.message.reply_text(
+        "🦂 *ＢＯＴ ＡＣＴＩＶＡＤＯ* 🦂\n\n"
+        "┌─────────────────────────────────┐\n"
+        "│     📡 ＥＸＴＲＡＣＴＯＲ ＩＰＴＶ     │\n"
+        "│     🦂 ＢＹ ＬＵＩＳ Ｒ 🦂           │\n"
+        "│     🌐 ＵＮＩＶＥＲＳＡＬ ｖ２.０     │\n"
+        "└─────────────────────────────────┘\n\n"
+        "🎯 *Comandos:*\n"
+        "▸ /start  → Activar bot\n"
+        "▸ /stop   → Desactivar bot\n"
+        "▸ /status → Estado\n\n"
+        "📎 *Envía un enlace Xtream o M3U*\n\n"
+        "🦂 *ＢＹ ＬＵＩＳ Ｒ* 🦂",
+        parse_mode='Markdown'
+    )
 
 async def stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if str(update.effective_user.id) != str(ADMIN_ID):
@@ -107,19 +118,33 @@ async def stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     global bot_active
     bot_active = False
-    await update.message.reply_text("🛑 Bot APAGADO - BY LUIS R")
+    await update.message.reply_text(
+        "🦂 *ＢＯＴ ＡＰＡＧＡＤＯ* 🦂\n\n"
+        "Usa /start para encenderlo nuevamente.\n\n"
+        "🦂 *ＢＹ ＬＵＩＳ Ｒ* 🦂",
+        parse_mode='Markdown'
+    )
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if str(update.effective_user.id) != str(ADMIN_ID):
         await update.message.reply_text("❌ No autorizado")
         return
-    estado = "🟢 ACTIVO" if bot_active else "🔴 APAGADO"
-    await update.message.reply_text(f"📊 Estado: {estado}\nBY LUIS R")
+    estado = "🟢 *ＡＣＴＩＶＯ*" if bot_active else "🔴 *ＡＰＡＧＡＤＯ*"
+    await update.message.reply_text(
+        f"┌─────────────────────────────────┐\n"
+        f"│       📊 *ＥＳＴＡＤＯ ＤＥＬ ＢＯＴ*       │\n"
+        f"└─────────────────────────────────┘\n\n"
+        f"▸ Estado: {estado}\n"
+        f"▸ Modo: Extractor Universal\n"
+        f"▸ Versión: 2.0\n\n"
+        f"🦂 *ＢＹ ＬＵＩＳ Ｒ* 🦂",
+        parse_mode='Markdown'
+    )
 
 async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global bot_active
     if not bot_active:
-        await update.message.reply_text("🔴 Bot apagado. Usa /start")
+        await update.message.reply_text("🦂 Bot apagado. Usa /start 🦂")
         return
     if str(update.effective_user.id) != str(ADMIN_ID):
         return
@@ -129,7 +154,7 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Enlace inválido")
         return
     
-    msg = await update.message.reply_text("⏳ Verificando cuenta...")
+    msg = await update.message.reply_text("🦂 *Extrayendo información...* 🦂", parse_mode='Markdown')
     
     portal, user, pwd = extract_data(url)
     if not portal:
@@ -139,79 +164,100 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
     success, info = verify_account(portal, user, pwd)
     
     if success:
-        # Datos de la cuenta
-        expire = info.get('exp_date', 'No expira')
-        if str(expire).isdigit() and int(expire) > 0:
-            expire = datetime.fromtimestamp(int(expire)).strftime('%d/%m/%Y %H:%M')
+        # Fecha de creación (cuando se creó la cuenta en el panel)
+        created = info.get('created_at', None)
+        created_str = "No disponible"
+        if created and str(created).isdigit() and int(created) > 0:
+            created_str = datetime.fromtimestamp(int(created)).strftime('%d/%m/%Y')
+        
+        # Fecha de expiración
+        expire = info.get('exp_date', None)
+        expire_str = "No expira"
+        if expire and str(expire).isdigit() and int(expire) > 0:
+            expire_str = datetime.fromtimestamp(int(expire)).strftime('%d/%m/%Y')
+        
         active = info.get('active_cons', '0')
         max_con = info.get('max_connections', '0')
         status_text = info.get('status', 'Active')
-        is_trial = "Trial" if "trial" in user.lower() or "test" in user.lower() else "No Trial"
+        is_trial = "Trial" if "trial" in user.lower() else "No Trial"
         
-        # Ubicación del servidor
         country = get_server_location(portal)
         
-        # Obtener conteos de contenido
-        await msg.edit_text("⏳ Obteniendo información del servidor...")
+        await msg.edit_text("📡 *Obteniendo contenido...*", parse_mode='Markdown')
         live, vod, series = get_content_counts(portal, user, pwd)
         
-        # Obtener categorías
-        await msg.edit_text("⏳ Obteniendo categorías...")
+        await msg.edit_text("📺 *Obteniendo categorías...*", parse_mode='Markdown')
         categories = get_categories(portal, user, pwd)
         
-        # Construir enlaces
         m3u_link = f"http://{portal}/get.php?username={user}&password={pwd}&type=m3u_plus"
         epg_link = f"http://{portal}/xmltv.php?username={user}&password={pwd}"
         
-        # Formato del mensaje
-        separator = "━━━━━━━━━━━━━━━━━━━━━━"
+        # Diseño ULTRA ELEGANTE con 🦂
         result = f"""
-{separator}
-     ★彡ᴀᴄᴄᴏᴜɴᴛ ɪɴꜰᴏ彡★
-{separator}
-➥ 🟢 CUENTA VÁLIDA
-➥🆙 Estado: ✅ {status_text}
-➥🧪 {is_trial}
-➥🌐 Portal: {portal}
-➥👤 Usuario: {user}
-➥🔑 Contraseña: {pwd}
-➥⏲ Vence: {expire}
-➥👁 Conexiones: {active} / {max_con}
-➥📍 País: {country}
-{separator}
-       ★彡ᴄᴏɴᴛᴇɴᴛ彡★
-{separator}
-➥📺 En Vivo: {live}
-➥🎥 VOD: {vod}
-➥📹 Series: {series}
-{separator}
-➥🔗 <a href="{m3u_link}">M3U Link</a>   |   <a href="{epg_link}">EPG Link</a>
+╔══════════════════════════════════════════════════════════════╗
+║            🦂 ＩＮＦＯＲＭＡＣＩÓＮ ＤＥ ＬＡ ＣＵＥＮＴＡ 🦂            ║
+║                       🦂 ＢＹ ＬＵＩＳ Ｒ 🦂                        ║
+╠══════════════════════════════════════════════════════════════╣
+║  🟢 Ｅｓｔａｄｏ        : ✅ {status_text}                             ║
+║  🧪 Ｔｒｉａｌ         : {is_trial}                                      ║
+║  🌐 Ｐｏｒｔａｌ        : {portal}                             ║
+║  👤 Ｕｓｕａｒｉｏ       : {user}                           ║
+║  🔑 Ｃｏｎｔｒａｓｅñａ   : {pwd}                            ║
+║  📅 Ｆｅｃｈａ ｃｒｅａｃｉóｎ : {created_str}                               ║
+║  ⏰ Ｆｅｃｈａ ｅｘｐｉｒａｃｉóｎ : {expire_str}                               ║
+║  👥 Ｃｏｎｅｘｉｏｎｅｓ   : {active} / {max_con}                               ║
+║  📍 Ｐａíｓ          : {country}                                ║
+╠══════════════════════════════════════════════════════════════╣
+║                      📺 ＣＯＮＴＥＮＩＤＯ 📺                      ║
+╠══════════════════════════════════════════════════════════════╣
+║  📡 Ｅｎ Ｖｉｖｏ      : {live}                                            ║
+║  🎬 Ｐｅｌíｃｕｌａｓ     : {vod}                                            ║
+║  📹 Ｓｅｒｉｅｓ       : {series}                                           ║
+╠══════════════════════════════════════════════════════════════╣
+║                      🔗 ＥＮＬＡＣＥＳ 🔗                      ║
+╠══════════════════════════════════════════════════════════════╣
+║  📺 <a href="{m3u_link}">▶ Ｍ３Ｕ Ｐｌａｙｌｉｓｔ</a>                                ║
+║  📡 <a href="{epg_link}">▶ ＥＰＧ Ｇｕｉｄｅ</a>                                   ║
 """
         if categories:
             result += f"""
-{separator}
-    ★彡ᴄᴀᴛᴇɢᴏʀíᴀs彡★
-{separator}
-{categories}
+╠══════════════════════════════════════════════════════════════╣
+║                   🏷️ ＣＡＴＥＧＯＲÍＡＳ 🏷️                   ║
+╠══════════════════════════════════════════════════════════════╣
 """
-        result += f"""
-{separator}
-   ✔️ Verificado por BY LUIS R
-   🕐 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-{separator}"""
+            for line in categories.split('\n')[:12]:
+                if line.strip():
+                    result += f"║  {line:<58} ║\n"
         
+        result += f"""
+╠══════════════════════════════════════════════════════════════╣
+║  🦂 Ｖｅｒｉｆｉｃａｄｏ ｐｏｒ ＬＵＩＳ Ｒ 🦂                            ║
+║  🕐 {datetime.now().strftime('%d/%m/%Y - %H:%M:%S')}                               ║
+╚══════════════════════════════════════════════════════════════╝
+"""
         await msg.edit_text(result, parse_mode='HTML')
     else:
-        await msg.edit_text(f"❌ CUENTA INVÁLIDA\n\n@{update.effective_user.first_name}, las credenciales no son válidas.\n\nBY LUIS R")
+        await msg.edit_text(
+            f"╔══════════════════════════════════════════════════════════════╗\n"
+            f"║                    ❌ ＣＵＥＮＴＡ ＩＮＶÁＬＩＤＡ ❌                    ║\n"
+            f"╠══════════════════════════════════════════════════════════════╣\n"
+            f"║  ▸ Las credenciales no son válidas                            ║\n"
+            f"║  ▸ Usuario: {user}                                    ║\n"
+            f"║  ▸ Portal: {portal}                                    ║\n"
+            f"╠══════════════════════════════════════════════════════════════╣\n"
+            f"║  🦂 ＢＹ ＬＵＩＳ Ｒ 🦂                                            ║\n"
+            f"╚══════════════════════════════════════════════════════════════╝",
+            parse_mode='HTML'
+        )
 
 def main():
-    print("🚀 Bot IPTV Universal - BY LUIS R")
+    print("🦂 IPTV UNIVERSAL EXTRACTOR - BY LUIS R 🦂")
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("stop", stop))
     app.add_handler(CommandHandler("status", status))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_url))
-    print("✅ Bot iniciado correctamente - BY LUIS R")
+    print("✅ Bot Ultra Elegante 🦂 iniciado - BY LUIS R")
     app.run_polling()
 
 if __name__ == "__main__":
