@@ -1,0 +1,17 @@
+services:
+  - type: worker
+    name: iptv-bot-luis-r
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python simple_bot.py
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
+      - key: ADMIN_ID
+        sync: false
+      - key: ADMIN_USERNAME
+        value: luisr
+      - key: RENDER_URL
+        sync: false
+      - key: PYTHONUNBUFFERED
+        value: "1"
