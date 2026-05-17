@@ -29,71 +29,94 @@ def verify_account(portal, user, pwd):
         if data.get('user_info', {}).get('auth') == 1:
             return True, data['user_info']
         return False, None
-    except:
+    except Exception as e:
+        print(f"Error: {e}")
         return False, None
 
-async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if str(update.effective_user.id) != str(ADMIN_ID):
         await update.message.reply_text("❌ No autorizado")
         return
     global bot_active
     bot_active = True
-    await update.message.reply_text("✅ Bot ACTIVADO - BY LUIS R")
+    await update.message.reply_text("✅ Bot ACTIVADO - BY LUIS R\n\nEnvía un enlace Xtream o M3U para verificar.")
 
-async def stop(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+async def stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if str(update.effective_user.id) != str(ADMIN_ID):
         await update.message.reply_text("❌ No autorizado")
         return
     global bot_active
     bot_active = False
-    await update.message.reply_text("🛑 Bot APAGADO - BY LUIS R")
+    await update.message.reply_text("🛑 Bot APAGADO - BY LUIS R\n\nUsa /start para encenderlo.")
 
-async def handle_url(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if str(update.effective_user.id) != str(ADMIN_ID):
+        await update.message.reply_text("❌ No autorizado")
+        return
+    estado = "🟢 ACTIVO" if bot_active else "🔴 APAGADO"
+    await update.message.reply_text(f"📊 Estado del bot: {estado}\nBY LUIS R")
+
+async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global bot_active
     if not bot_active:
         await update.message.reply_text("🔴 Bot apagado. Usa /start")
         return
+    
     if str(update.effective_user.id) != str(ADMIN_ID):
+        await update.message.reply_text("❌ No autorizado")
         return
+    
     url = update.message.text.strip()
     if not url.startswith('http'):
-        await update.message.reply_text("❌ Enlace inválido")
+        await update.message.reply_text("❌ Enlace inválido. Envía una URL que comience con http:// o https://")
         return
-    msg = await update.message.reply_text("⏳ Verificando...")
+    
+    msg = await update.message.reply_text("⏳ Verificando cuenta... Por favor espera.")
+    
     portal, user, pwd = extract_data(url)
     if not portal:
-        await msg.edit_text("❌ No se pudo extraer datos del enlace")
+        await msg.edit_text("❌ No se pudo extraer los datos del enlace.\n\nFormato soportado:\n• http://portal/player_api.php?username=user&password=pass\n• http://portal/get.php?username=user&password=pass&type=m3u")
         return
+    
     success, info = verify_account(portal, user, pwd)
+    
     if success:
         expire = info.get('exp_date', 'No expira')
+        if expire and str(expire).isdigit():
+            from datetime import datetime as dt
+            expire = dt.fromtimestamp(int(expire)).strftime('%Y-%m-%d')
         active = info.get('active_cons', '0')
         max_con = info.get('max_connections', '0')
+        status_text = info.get('status', 'Active')
+        
         result = f"""
 ━━━━━━━━━━━━━━━━━━━━━━
      ★彡ᴀᴄᴄᴏᴜɴᴛ ɪɴꜰᴏ彡★
 ━━━━━━━━━━━━━━━━━━━━━━
 ➥ 🟢 CUENTA VÁLIDA
+➥🆙 Estado: ✅ {status_text}
 ➥🌐 Portal: {portal}
-➥👤 User: {user}
-➥🔑 Pass: {pwd}
-➥⏲ Expira: {expire}
-➥👁 Conexiones: {active}/{max_con}
+➥👤 Usuario: {user}
+➥🔑 Contraseña: {pwd}
+➥⏲ Vence: {expire}
+➥👁 Conexiones: {active} / {max_con}
 ━━━━━━━━━━━━━━━━━━━━━━
-   ✔️ BY LUIS R
+   ✔️ Verificado por BY LUIS R
    🕐 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 ━━━━━━━━━━━━━━━━━━━━━━
 """
         await msg.edit_text(result)
     else:
-        await msg.edit_text(f"❌ Cuenta INVÁLIDA\n@{update.effective_user.first_name}\nBY LUIS R")
+        await msg.edit_text(f"❌ CUENTA INVÁLIDA\n\n@{update.effective_user.first_name}, las credenciales no son válidas.\n\nBY LUIS R")
 
 def main():
+    print("🚀 Iniciando Bot de Telegram - BY LUIS R")
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("stop", stop))
+    app.add_handler(CommandHandler("status", status))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_url))
-    print("✅ Bot iniciado - BY LUIS R")
+    print("✅ Bot iniciado correctamente - Esperando mensajes...")
     app.run_polling()
 
 if __name__ == "__main__":
