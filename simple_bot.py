@@ -1,69 +1,58 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-╔══════════════════════════════════════════════════════════════════════════════╗
-║              🦂 IPTV BOT ULTRA — BY LUIS R 🦂                               ║
-║              Verificación HIT / FAIL / RETRY Perfecta                       ║
-║              24/7 en Railway — Gratis                                        ║
-╚══════════════════════════════════════════════════════════════════════════════╝
+🦂 IPTV BOT ULTRA — BY LUIS R 🦂
+Verificación HIT / FAIL / RETRY con múltiples métodos
 """
-
-import os
-import re
-import json
-import time
-import threading
-import logging
+ 
+import os, re, json, time, threading, logging, socket, asyncio
 import requests
 from datetime import datetime
 from telegram import Update
-from telegram.ext import (
-    Application, CommandHandler, MessageHandler,
-    filters, ContextTypes
-)
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from telegram.constants import ParseMode
-
-# ─────────────────────────────────────────────
-#  CONFIGURACIÓN
-# ─────────────────────────────────────────────
+ 
+# ══════════════════════════════════════════
+#  CONFIG
+# ══════════════════════════════════════════
 BOT_TOKEN  = os.getenv("BOT_TOKEN", "")
 ADMIN_ID   = int(os.getenv("ADMIN_ID", "0"))
-RENDER_URL = os.getenv("RENDER_URL", "")          # URL de Railway/Render para keep-alive
-
-logging.basicConfig(level=logging.INFO,
-                    format="%(asctime)s [%(levelname)s] %(message)s")
+RENDER_URL = os.getenv("RENDER_URL", "")
+ 
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
-
-requests.packages.urllib3.disable_warnings()      # silenciar SSL warnings
-
-# ─────────────────────────────────────────────
-#  ESTADO GLOBAL
-# ─────────────────────────────────────────────
+requests.packages.urllib3.disable_warnings()
+ 
 bot_active     = True
 BOT_START_TIME = datetime.now()
 STATS = {"checks": 0, "hits": 0, "fails": 0, "retries": 0, "users": set()}
-
-# ─────────────────────────────────────────────
-#  DISEÑO / SEPARADORES
-# ─────────────────────────────────────────────
-LINE = "━" * 38
-
+ 
+LINE = "━" * 26
+ 
 FLAGS = {
-    "US": "🇺🇸", "MX": "🇲🇽", "ES": "🇪🇸", "AR": "🇦🇷",
-    "CO": "🇨🇴", "CL": "🇨🇱", "PE": "🇵🇪", "VE": "🇻🇪",
-    "BR": "🇧🇷", "EC": "🇪🇨", "UY": "🇺🇾", "BO": "🇧🇴",
-    "PA": "🇵🇦", "DO": "🇩🇴", "GT": "🇬🇹", "CR": "🇨🇷",
-    "GB": "🇬🇧", "DE": "🇩🇪", "FR": "🇫🇷", "NL": "🇳🇱",
-    "CA": "🇨🇦", "IT": "🇮🇹", "PT": "🇵🇹", "RU": "🇷🇺",
-    "TR": "🇹🇷", "IN": "🇮🇳", "CN": "🇨🇳", "JP": "🇯🇵",
+    "US":"🇺🇸","MX":"🇲🇽","ES":"🇪🇸","AR":"🇦🇷","CO":"🇨🇴","CL":"🇨🇱",
+    "PE":"🇵🇪","VE":"🇻🇪","BR":"🇧🇷","EC":"🇪🇨","UY":"🇺🇾","BO":"🇧🇴",
+    "PA":"🇵🇦","DO":"🇩🇴","GT":"🇬🇹","CR":"🇨🇷","GB":"🇬🇧","DE":"🇩🇪",
+    "FR":"🇫🇷","NL":"🇳🇱","CA":"🇨🇦","IT":"🇮🇹","PT":"🇵🇹","RU":"🇷🇺",
+    "TR":"🇹🇷","IN":"🇮🇳","CN":"🇨🇳","JP":"🇯🇵","AU":"🇦🇺","SV":"🇸🇻",
 }
-
-# ═══════════════════════════════════════════
-#  EXTRACCIÓN DE URL IPTV
-# ═══════════════════════════════════════════
-
+ 
+USER_AGENTS = [
+    "VLC/3.0.18 LibVLC/3.0.18",
+    "Kodi/19.4 (Windows NT 10.0; Win64; x64) Kodi/19.4",
+    "TiviMate/4.4.0 (Android 11)",
+    "IPTV Smarters Pro/3.0.9.4 (Android 10)",
+    "GSE SMART IPTV/7.4 (Android 11)",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    "okhttp/4.9.0",
+    "Dalvik/2.1.0 (Linux; U; Android 11)",
+]
+ 
+# ══════════════════════════════════════════
+#  EXTRACCIÓN DE URL
+# ══════════════════════════════════════════
+ 
 def extract_from_url(text: str):
-    """Extrae portal, usuario y contraseña de cualquier formato IPTV."""
     patterns = [
         r'(?:https?://)?([^/\s]+)/get\.php\?username=([^&\s]+)&password=([^&\s]+)',
         r'(?:https?://)?([^/\s]+)/player_api\.php\?username=([^&\s]+)&password=([^&\s]+)',
@@ -74,253 +63,211 @@ def extract_from_url(text: str):
         m = re.search(p, text, re.IGNORECASE)
         if m:
             return m.group(1), m.group(2), m.group(3)
-
-    # Formato: portal|usuario|password  o  portal usuario password
     if '|' in text:
         parts = [x.strip() for x in text.split('|')]
         if len(parts) == 3 and parts[0]:
             return parts[0], parts[1], parts[2]
-
     parts = text.split()
     if len(parts) == 3 and ':' in parts[0]:
         return parts[0], parts[1], parts[2]
-
     return None, None, None
-
-# ═══════════════════════════════════════════
+ 
+# ══════════════════════════════════════════
 #  VERIFICACIÓN PRINCIPAL
-# ═══════════════════════════════════════════
-
-HEADERS = {
-    "User-Agent": "VLC/3.0.18 LibVLC/3.0.18",
-    "Accept": "*/*",
-    "Connection": "keep-alive",
-}
-
-def _get(url: str, timeout: int = 15) -> requests.Response | None:
-    """GET silencioso; devuelve None en cualquier error de red."""
+# ══════════════════════════════════════════
+ 
+def _parse_json(raw: str):
+    raw = raw.strip()
     try:
-        return requests.get(url, headers=HEADERS, timeout=timeout,
-                            verify=False, allow_redirects=True)
+        return json.loads(raw)
     except Exception:
-        return None
-
-
-def verify_account(portal: str, user: str, pwd: str) -> tuple[str, dict | None]:
-    """
-    Lógica de verificación:
-      • HIT    → auth=1 y status='Active'
-      • CUSTOM → auth=1 pero status != 'Active'
-      • FAIL   → auth=0
-      • RETRY  → Sin respuesta, JSON inválido, estructura inesperada
-    """
-    # Múltiples User-Agents para evitar bloqueos
-    user_agents = [
-        "VLC/3.0.18 LibVLC/3.0.18",
-        "Kodi/19.4 (Windows NT 10.0; Win64; x64)",
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        "TiviMate/4.4.0 (Android 11)",
-        "IPTV Smarters Pro/3.0.9.4 (Android 10)",
-    ]
-
-    for scheme in ("http", "https"):
-        for ua in user_agents[:2]:   # probar 2 UAs por scheme
-            url = f"{scheme}://{portal}/player_api.php?username={user}&password={pwd}"
+        pass
+    for ch in ('{', '['):
+        idx = raw.find(ch)
+        if idx >= 0:
             try:
-                resp = requests.get(
-                    url,
-                    headers={"User-Agent": ua, "Accept": "*/*", "Connection": "keep-alive"},
-                    timeout=20,
-                    verify=False,
-                    allow_redirects=True
-                )
-            except Exception as e:
-                log.warning(f"Red error {scheme}: {e}")
-                continue
-
-            if resp.status_code != 200:
-                log.warning(f"HTTP {resp.status_code} en {portal}")
-                continue
-
-            raw = resp.text.strip()
-
-            # HTML = Cloudflare u otro bloqueo
-            if raw.startswith("<"):
-                log.warning("Respuesta HTML, probando siguiente UA")
-                continue
-
-            # Intentar JSON
-            try:
-                data = json.loads(raw)
-            except json.JSONDecodeError:
-                # Algunos servidores mandan datos válidos pero con basura al inicio
-                try:
-                    start = raw.find("{")
-                    if start >= 0:
-                        data = json.loads(raw[start:])
-                    else:
-                        continue
-                except Exception:
-                    continue
-
-            if not isinstance(data, dict):
-                continue
-
-            # ── Sin user_info: buscar datos directamente ──────────────────
-            if "user_info" not in data:
-                # Algunos servidores mandan auth directamente
-                auth = data.get("auth")
-                if auth is not None:
-                    try:
-                        auth = int(auth)
-                        if auth == 0:
-                            return "FAIL", None
-                        if auth == 1:
-                            return "HIT", {"user_info": data, "server_info": {}}
-                    except Exception:
-                        pass
-                log.warning("Sin user_info en respuesta")
-                continue
-
-            ui   = data["user_info"]
-            auth = ui.get("auth")
-
-            if auth is None:
-                continue
-
-            try:
-                auth = int(auth)
-            except (ValueError, TypeError):
-                continue
-
-            if auth == 0:
-                return "FAIL", None
-
-            if auth == 1:
-                status  = ui.get("status", "")
-                payload = {"user_info": ui, "server_info": data.get("server_info", {})}
-                if status == "Active":
-                    return "HIT", payload
-                else:
-                    return "CUSTOM", payload
-
-    return "RETRY", None
-
-
-def debug_portal(portal: str, user: str, pwd: str) -> str:
-    """Diagnóstico detallado de un portal para saber exactamente qué falla."""
-    lines = [f"🔬 *DIAGNÓSTICO* — `{portal}`\n"]
-
-    for scheme in ("http", "https"):
-        url = f"{scheme}://{portal}/player_api.php?username={user}&password={pwd}"
-        lines.append(f"🔗 Probando: `{scheme}`")
-        try:
-            r = requests.get(url, headers=HEADERS, timeout=15, verify=False)
-            lines.append(f"  ✅ HTTP Status: `{r.status_code}`")
-            raw = r.text.strip()[:200]
-            lines.append(f"  📄 Respuesta: `{raw}`")
-            if r.status_code == 200:
-                try:
-                    d = r.json()
-                    ui = d.get("user_info", {})
-                    lines.append(f"  🔑 auth: `{ui.get('auth', 'N/A')}`")
-                    lines.append(f"  🆙 status: `{ui.get('status', 'N/A')}`")
-                except Exception:
-                    lines.append("  ❌ JSON inválido")
-        except requests.exceptions.ConnectionError as e:
-            lines.append(f"  ❌ Conexión rechazada: `{str(e)[:80]}`")
-        except requests.exceptions.Timeout:
-            lines.append("  ⏱ Timeout (>15s)")
-        except Exception as e:
-            lines.append(f"  ❌ Error: `{str(e)[:80]}`")
-        lines.append("")
-
-    return "\n".join(lines)
-
-# ═══════════════════════════════════════════
-#  DATOS ADICIONALES
-# ═══════════════════════════════════════════
-
-def get_content_counts(portal: str, user: str, pwd: str) -> tuple[str, str, str]:
-    live = vod = series = "N/D"
-    base = f"http://{portal}/player_api.php?username={user}&password={pwd}"
-    actions = [("get_live_streams", "live"),
-               ("get_vod_streams",  "vod"),
-               ("get_series",       "series")]
-    for action, key in actions:
-        r = _get(f"{base}&action={action}", timeout=20)
-        if r and r.status_code == 200:
-            try:
-                d = r.json()
-                count = str(len(d)) if isinstance(d, list) else "0"
-                if key == "live":   live   = count
-                elif key == "vod":  vod    = count
-                else:               series = count
+                return json.loads(raw[idx:])
             except Exception:
                 pass
-    return live, vod, series
-
-
-def get_categories(portal: str, user: str, pwd: str, limit: int = 15) -> str:
-    url = (f"http://{portal}/player_api.php?username={user}&password={pwd}"
-           f"&action=get_live_categories")
-    r = _get(url, timeout=20)
-    if not r or r.status_code != 200:
-        return ""
+    return None
+ 
+ 
+def _analyze(data) -> tuple:
+    if not isinstance(data, dict):
+        return "RETRY", None
+    ui   = data.get("user_info", data)
+    auth = ui.get("auth")
+    if auth is None:
+        return "RETRY", None
     try:
+        auth = int(auth)
+    except Exception:
+        return "RETRY", None
+    if auth == 0:
+        return "FAIL", None
+    if auth == 1:
+        real_ui = data.get("user_info", ui)
+        payload = {"user_info": real_ui, "server_info": data.get("server_info", {})}
+        if real_ui.get("status", "") == "Active":
+            return "HIT", payload
+        else:
+            return "CUSTOM", payload
+    return "RETRY", None
+ 
+ 
+def verify_account(portal: str, user: str, pwd: str) -> tuple:
+    host = portal.split(':')[0]
+    port = int(portal.split(':')[1]) if ':' in portal else 8080
+ 
+    # Test TCP rápido
+    tcp_ok = False
+    for p in (port, 443, 80):
+        try:
+            s = socket.create_connection((host, p), timeout=8)
+            s.close()
+            tcp_ok = True
+            log.info(f"TCP OK {host}:{p}")
+            break
+        except Exception:
+            pass
+ 
+    if not tcp_ok:
+        log.warning(f"TCP FAIL {host} → RETRY directo")
+        return "RETRY", None
+ 
+    # Endpoints a probar
+    urls = [
+        f"http://{portal}/player_api.php?username={user}&password={pwd}",
+        f"https://{portal}/player_api.php?username={user}&password={pwd}",
+        f"http://{portal}/get.php?username={user}&password={pwd}&type=m3u_plus",
+        f"https://{portal}/get.php?username={user}&password={pwd}&type=m3u_plus",
+    ]
+ 
+    for url in urls:
+        for ua in USER_AGENTS[:4]:
+            try:
+                r = requests.get(
+                    url,
+                    headers={"User-Agent": ua, "Accept": "*/*",
+                             "Connection": "keep-alive", "Cache-Control": "no-cache"},
+                    timeout=20, verify=False, allow_redirects=True
+                )
+            except Exception as e:
+                log.debug(f"Req error {ua[:20]}: {e}")
+                continue
+ 
+            log.info(f"HTTP {r.status_code} {url[:55]} ua={ua[:20]}")
+ 
+            if r.status_code not in (200, 206):
+                continue
+ 
+            raw = r.text.strip()
+ 
+            # HTML / Cloudflare
+            if raw.startswith("<") or "cloudflare" in raw.lower():
+                continue
+ 
+            # M3U directo → cuenta activa
+            if raw.startswith("#EXTM3U") or raw.startswith("#EXT"):
+                log.info("M3U detectado → HIT")
+                return "HIT", {
+                    "user_info": {
+                        "auth": 1, "status": "Active",
+                        "username": user, "exp_date": "0",
+                        "active_cons": "?", "max_connections": "?",
+                        "is_trial": "0", "created_at": "0",
+                    },
+                    "server_info": {}, "m3u_direct": True,
+                }
+ 
+            data = _parse_json(raw)
+            if data is None:
+                log.warning(f"JSON inválido: {raw[:60]}")
+                continue
+ 
+            result, payload = _analyze(data)
+            if result != "RETRY":
+                return result, payload
+ 
+    return "RETRY", None
+ 
+# ══════════════════════════════════════════
+#  DATOS ADICIONALES
+# ══════════════════════════════════════════
+ 
+def get_content_counts(portal, user, pwd):
+    live = vod = series = "N/D"
+    base = f"http://{portal}/player_api.php?username={user}&password={pwd}"
+    for action, key in [("get_live_streams","l"),("get_vod_streams","v"),("get_series","s")]:
+        try:
+            r = requests.get(f"{base}&action={action}",
+                             headers={"User-Agent": USER_AGENTS[0]},
+                             timeout=25, verify=False)
+            if r.status_code == 200:
+                d = r.json()
+                c = str(len(d)) if isinstance(d, list) else "0"
+                if key=="l": live=c
+                elif key=="v": vod=c
+                else: series=c
+        except Exception:
+            pass
+    return live, vod, series
+ 
+ 
+def get_categories(portal, user, pwd, limit=20):
+    try:
+        url = (f"http://{portal}/player_api.php?username={user}&password={pwd}"
+               f"&action=get_live_categories")
+        r = requests.get(url, headers={"User-Agent": USER_AGENTS[0]},
+                         timeout=20, verify=False)
+        if r.status_code != 200:
+            return ""
         cats = r.json()
         if not isinstance(cats, list) or not cats:
             return ""
-
-        # Conteo de canales por categoría (opcional, puede fallar)
-        count_map: dict[str, int] = {}
-        r2 = _get(
-            f"http://{portal}/player_api.php?username={user}&password={pwd}"
-            f"&action=get_live_streams", timeout=20)
-        if r2 and r2.status_code == 200:
-            try:
+        count_map = {}
+        try:
+            r2 = requests.get(
+                f"http://{portal}/player_api.php?username={user}&password={pwd}&action=get_live_streams",
+                headers={"User-Agent": USER_AGENTS[0]}, timeout=25, verify=False)
+            if r2.status_code == 200:
                 for ch in r2.json():
-                    cid = str(ch.get("category_id", ""))
+                    cid = str(ch.get("category_id",""))
                     count_map[cid] = count_map.get(cid, 0) + 1
-            except Exception:
-                pass
-
+        except Exception:
+            pass
         lines = []
         for c in cats[:limit]:
-            name = c.get("category_name", "").replace("\\/", "/").strip()
-            cid  = str(c.get("category_id", ""))
+            name = c.get("category_name","").replace("\\/","/").strip()
+            cid  = str(c.get("category_id",""))
             if not name:
                 continue
             cnt = f" [{count_map[cid]}]" if cid in count_map else ""
             lines.append(f"  ➠ {name}{cnt}")
         if len(cats) > limit:
-            lines.append(f"  ➕ ...y {len(cats) - limit} categorías más")
+            lines.append(f"  ➕ ...y {len(cats)-limit} categorías más")
         return "\n".join(lines)
     except Exception:
         return ""
-
-
-def get_server_location(portal: str) -> str:
-    ip = portal.split(":")[0]
-    r = _get(f"http://ip-api.com/json/{ip}", timeout=6)
-    if r and r.status_code == 200:
-        try:
+ 
+ 
+def get_location(portal):
+    try:
+        ip = portal.split(":")[0]
+        r  = requests.get(f"http://ip-api.com/json/{ip}", timeout=6)
+        if r.status_code == 200:
             d = r.json()
             if d.get("status") == "success":
-                country = d.get("country", "Desconocido")
-                code    = d.get("countryCode", "")
-                flag    = FLAGS.get(code, "🌍")
-                return f"{country} {flag}"
-        except Exception:
-            pass
+                return f"{d.get('country','?')} {FLAGS.get(d.get('countryCode',''),'🌍')}"
+    except Exception:
+        pass
     return "Desconocido 🌍"
-
-# ═══════════════════════════════════════════
-#  TARJETAS DE RESULTADO
-# ═══════════════════════════════════════════
-
-def _ts(epoch) -> str:
-    """Convierte epoch a fecha legible."""
+ 
+# ══════════════════════════════════════════
+#  TARJETAS
+# ══════════════════════════════════════════
+ 
+def _ts(epoch):
     try:
         v = int(epoch)
         if v > 0:
@@ -328,179 +275,159 @@ def _ts(epoch) -> str:
     except Exception:
         pass
     return "Sin fecha"
-
-
-def card_hit(portal, user, pwd, ui, si, live, vod, series, cats) -> str:
-    expire  = _ts(ui.get("exp_date", 0))
-    created = _ts(ui.get("created_at", 0))
-    active  = ui.get("active_cons", "0")
-    maxcon  = ui.get("max_connections", "0")
-    status  = ui.get("status", "Active")
-    trial   = "✅ Trial" if ui.get("is_trial") else "❌ No Trial"
-    location = get_server_location(portal)
-
+ 
+ 
+def card_hit(portal, user, pwd, ui, live, vod, series, cats, tg_user):
+    expire   = _ts(ui.get("exp_date", 0))
+    created  = _ts(ui.get("created_at", 0))
+    active   = ui.get("active_cons", "?")
+    maxcon   = ui.get("max_connections", "?")
+    status   = ui.get("status", "Active")
+    is_trial = ui.get("is_trial", "0")
+    trial    = "No Trial" if str(is_trial) in ("0", "false", "") else "✅ Trial"
+    location = get_location(portal)
     m3u = f"http://{portal}/get.php?username={user}&password={pwd}&type=m3u_plus"
     epg = f"http://{portal}/xmltv.php?username={user}&password={pwd}"
-
-    card = (
-        f"{LINE}\n"
-        f"     ★彡ᴀᴄᴄᴏᴜɴᴛ ɪɴꜰᴏ彡★\n"
-        f"{LINE}\n"
-        f"➥ 🟢 CUENTA VÁLIDA\n"
-        f"➥ 🆙 Estado: ✅ {status.upper()}\n"
-        f"➥ 🧪 Trial: {trial}\n"
-        f"➥ 🌐 Portal: {portal}\n"
-        f"➥ 👤 Usuario: {user}\n"
-        f"➥ 🔑 Contraseña: {pwd}\n"
-        f"➥ 📅 Creada: {created}\n"
-        f"➥ ⏲ Vence: {expire}\n"
-        f"➥ 👁 Conexiones: {active} / {maxcon}\n"
-        f"➥ 📍 País: {location}\n"
-        f"{LINE}\n"
-        f"       ★彡ᴄᴏɴᴛᴇɴᴛ彡★\n"
-        f"{LINE}\n"
-        f"➥ 📺 En Vivo: {live}\n"
-        f"➥ 🎥 VOD: {vod}\n"
-        f"➥ 📹 Series: {series}\n"
-        f"{LINE}\n"
-        f'➥ 🔗 <a href="{m3u}">M3U Link</a>   |   <a href="{epg}">EPG Link</a>\n'
-        f"{LINE}\n"
-    )
+ 
+    t  = f"{LINE}\n"
+    t += f"🦂 <b>LUIS R</b> 🦂\n"
+    t += f"     ★彡ᴀᴄᴄᴏᴜɴᴛ ɪɴꜰᴏ彡★\n"
+    t += f"{LINE}\n"
+    t += f"➥ 🟢 CUENTA VÁLIDA\n"
+    t += f"➥ 🆙 Estado: ✅ {status.upper()}\n"
+    t += f"➥ 🧪 Trial: {trial}\n"
+    t += f"➥ 🌐 Portal: <code>{portal}</code>\n"
+    t += f"➥ 👤 Usuario: <code>{user}</code>\n"
+    t += f"➥ 🔑 Contraseña: <code>{pwd}</code>\n"
+    t += f"➥ 📅 Creada: {created}\n"
+    t += f"➥ ⏲ Vence: {expire}\n"
+    t += f"➥ 👁 Conexiones: {active} / {maxcon}\n"
+    t += f"➥ 📍 País: {location}\n"
+    t += f"{LINE}\n"
+    t += f"       ★彡ᴄᴏɴᴛᴇɴᴛ彡★\n"
+    t += f"{LINE}\n"
+    t += f"➥ 📺 En Vivo: {live}\n"
+    t += f"➥ 🎥 VOD: {vod}\n"
+    t += f"➥ 📹 Series: {series}\n"
+    t += f"{LINE}\n"
+    t += f'➥ 🔗 <a href="{m3u}">M3U Link</a>   |   <a href="{epg}">EPG Link</a>\n'
     if cats:
-        card += (
-            f"    ★彡ᴄᴀᴛᴇɢᴏʀíᴀs彡★\n"
-            f"{LINE}\n"
-            f"{cats}\n"
-            f"{LINE}\n"
-        )
-    card += (
-        f"  ✔️ Verificado por @{user}\n"
-        f"  🕐 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-        f"{LINE}"
-    )
-    return card
-
-
-def card_custom(portal, user, pwd, ui) -> str:
-    status  = ui.get("status", "Desconocido")
-    expire  = _ts(ui.get("exp_date", 0))
-    maxcon  = ui.get("max_connections", "0")
-    return (
-        f"{LINE}\n"
-        f"     ★彡ᴀᴄᴄᴏᴜɴᴛ ɪɴꜰᴏ彡★\n"
-        f"{LINE}\n"
-        f"➥ 🟡 CUENTA EXISTE — NO ACTIVA\n"
-        f"➥ 🆙 Estado: ⚠️ {status.upper()}\n"
-        f"➥ 🌐 Portal: {portal}\n"
-        f"➥ 👤 Usuario: {user}\n"
-        f"➥ 🔑 Contraseña: {pwd}\n"
-        f"➥ ⏲ Vence: {expire}\n"
-        f"➥ 👥 Max conexiones: {maxcon}\n"
-        f"{LINE}\n"
-        f"  ⚠️ La cuenta existe pero no está activa\n"
-        f"  🕐 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-        f"{LINE}"
-    )
-
-
-def card_fail(portal, user) -> str:
-    return (
-        f"{LINE}\n"
-        f"     ★彡ᴀᴄᴄᴏᴜɴᴛ ɪɴꜰᴏ彡★\n"
-        f"{LINE}\n"
-        f"➥ 🔴 CUENTA INVÁLIDA\n"
-        f"➥ 🌐 Portal: {portal}\n"
-        f"➥ 👤 Usuario: {user}\n"
-        f"{LINE}\n"
-        f"  ❌ Credenciales incorrectas (auth=0)\n"
-        f"  🕐 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-        f"{LINE}"
-    )
-
-
-def card_retry(portal, user) -> str:
-    return (
-        f"{LINE}\n"
-        f"     ★彡ᴀᴄᴄᴏᴜɴᴛ ɪɴꜰᴏ彡★\n"
-        f"{LINE}\n"
-        f"➥ 🔄 SIN RESPUESTA / RETRY\n"
-        f"➥ 🌐 Portal: {portal}\n"
-        f"➥ 👤 Usuario: {user}\n"
-        f"{LINE}\n"
-        f"  ⚠️ El servidor no respondió correctamente\n"
-        f"  ⚠️ Posible protección Cloudflare o servidor caído\n"
-        f"  💡 Intenta de nuevo en unos minutos\n"
-        f"  🕐 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-        f"{LINE}"
-    )
-
-# ═══════════════════════════════════════════
-#  KEEP-ALIVE (Railway 24/7)
-# ═══════════════════════════════════════════
-
+        t += f"{LINE}\n"
+        t += f"    ★彡ᴄᴀᴛᴇɢᴏʀíᴀs彡★\n"
+        t += f"{LINE}\n"
+        t += f"{cats}\n"
+    t += f"{LINE}\n"
+    t += f"   ✔️ Verificado para @{tg_user}\n"
+    t += f"   🕐 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+    t += f"{LINE}"
+    return t
+ 
+ 
+def card_custom(portal, user, pwd, ui, tg_user):
+    t  = f"{LINE}\n🦂 <b>LUIS R</b> 🦂\n     ★彡ᴀᴄᴄᴏᴜɴᴛ ɪɴꜰᴏ彡★\n{LINE}\n"
+    t += f"➥ 🟡 CUENTA EXISTE — NO ACTIVA\n"
+    t += f"➥ 🆙 Estado: ⚠️ {ui.get('status','?').upper()}\n"
+    t += f"➥ 🌐 Portal: <code>{portal}</code>\n"
+    t += f"➥ 👤 Usuario: <code>{user}</code>\n"
+    t += f"➥ 🔑 Contraseña: <code>{pwd}</code>\n"
+    t += f"➥ ⏲ Vence: {_ts(ui.get('exp_date',0))}\n"
+    t += f"➥ 👥 Max: {ui.get('max_connections','?')}\n"
+    t += f"{LINE}\n   ✔️ Verificado para @{tg_user}\n"
+    t += f"   🕐 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n{LINE}"
+    return t
+ 
+ 
+def card_fail(portal, user, tg_user):
+    t  = f"{LINE}\n🦂 <b>LUIS R</b> 🦂\n     ★彡ᴀᴄᴄᴏᴜɴᴛ ɪɴꜰᴏ彡★\n{LINE}\n"
+    t += f"➥ 🔴 CUENTA INVÁLIDA\n"
+    t += f"➥ 🌐 Portal: <code>{portal}</code>\n"
+    t += f"➥ 👤 Usuario: <code>{user}</code>\n"
+    t += f"{LINE}\n   ❌ Credenciales incorrectas (auth=0)\n"
+    t += f"   ✔️ Verificado para @{tg_user}\n"
+    t += f"   🕐 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n{LINE}"
+    return t
+ 
+ 
+def card_retry(portal, user, tg_user):
+    t  = f"{LINE}\n🦂 <b>LUIS R</b> 🦂\n     ★彡ᴀᴄᴄᴏᴜɴᴛ ɪɴꜰᴏ彡★\n{LINE}\n"
+    t += f"➥ 🔄 SIN RESPUESTA / RETRY\n"
+    t += f"➥ 🌐 Portal: <code>{portal}</code>\n"
+    t += f"➥ 👤 Usuario: <code>{user}</code>\n"
+    t += f"{LINE}\n   ⚠️ Servidor bloqueado o caído\n"
+    t += f"   💡 Intenta más tarde\n"
+    t += f"   ✔️ Verificado para @{tg_user}\n"
+    t += f"   🕐 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n{LINE}"
+    return t
+ 
+# ══════════════════════════════════════════
+#  KEEP-ALIVE 24/7
+# ══════════════════════════════════════════
+ 
 def keep_alive():
-    """Ping periódico para que Railway/Render no duerma el servicio."""
     if not RENDER_URL:
         return
     while True:
         try:
             requests.get(RENDER_URL, timeout=8)
-            log.info("Keep-alive ping OK")
+            log.info("Keep-alive ✅")
         except Exception:
             pass
-        time.sleep(540)   # cada 9 minutos
-
-# ═══════════════════════════════════════════
-#  HELPERS TELEGRAM
-# ═══════════════════════════════════════════
-
-def is_admin(update: Update) -> bool:
-    return update.effective_user.id == ADMIN_ID
-
-
+        time.sleep(480)
+ 
+# ══════════════════════════════════════════
+#  HELPERS
+# ══════════════════════════════════════════
+ 
+def is_admin(u: Update) -> bool:
+    return u.effective_user.id == ADMIN_ID
+ 
+def tg_name(u: Update) -> str:
+    usr = u.effective_user
+    return usr.username or usr.first_name or str(usr.id)
+ 
+# ══════════════════════════════════════════
+#  LÓGICA CENTRAL
+# ══════════════════════════════════════════
+ 
 async def do_check(update: Update, portal: str, user: str, pwd: str):
-    """Lógica central de verificación (llamada desde /check y mensajes URL)."""
-    global bot_active
     if not bot_active:
         return
-
     STATS["checks"] += 1
     STATS["users"].add(update.effective_user.id)
-
+    tg_user = tg_name(update)
+ 
     msg = await update.message.reply_text("🔍 Verificando cuenta…")
-
-    status, result = verify_account(portal, user, pwd)
-
+ 
+    loop = asyncio.get_event_loop()
+    status, result = await loop.run_in_executor(None, verify_account, portal, user, pwd)
+ 
     if status == "HIT":
         STATS["hits"] += 1
-        await msg.edit_text("📡 Obteniendo contenido y categorías…")
-        ui   = result["user_info"]
-        si   = result["server_info"]
-        live, vod, series = get_content_counts(portal, user, pwd)
-        cats = get_categories(portal, user, pwd)
-        text = card_hit(portal, user, pwd, ui, si, live, vod, series, cats)
-        await msg.edit_text(text, parse_mode=ParseMode.HTML,
-                            disable_web_page_preview=True)
-
-    elif status == "CUSTOM":
-        STATS["hits"] += 1          # cuenta real, aunque no activa
+        await msg.edit_text("📡 Obteniendo contenido…")
         ui = result["user_info"]
-        text = card_custom(portal, user, pwd, ui)
-        await msg.edit_text(text, parse_mode=ParseMode.HTML,
-                            disable_web_page_preview=True)
-
+        live, vod, series = await loop.run_in_executor(None, get_content_counts, portal, user, pwd)
+        cats              = await loop.run_in_executor(None, get_categories, portal, user, pwd)
+        text = card_hit(portal, user, pwd, ui, live, vod, series, cats, tg_user)
+        await msg.edit_text(text, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+ 
+    elif status == "CUSTOM":
+        STATS["hits"] += 1
+        ui = result["user_info"]
+        await msg.edit_text(card_custom(portal, user, pwd, ui, tg_user),
+                            parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+ 
     elif status == "FAIL":
         STATS["fails"] += 1
-        await msg.edit_text(card_fail(portal, user), parse_mode=ParseMode.HTML)
-
-    else:  # RETRY
+        await msg.edit_text(card_fail(portal, user, tg_user), parse_mode=ParseMode.HTML)
+ 
+    else:
         STATS["retries"] += 1
-        await msg.edit_text(card_retry(portal, user), parse_mode=ParseMode.HTML)
-
-# ═══════════════════════════════════════════
-#  COMANDOS
-# ═══════════════════════════════════════════
-
+        await msg.edit_text(card_retry(portal, user, tg_user), parse_mode=ParseMode.HTML)
+ 
+# ══════════════════════════════════════════
+#  COMANDOS TELEGRAM
+# ══════════════════════════════════════════
+ 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update):
         await update.message.reply_text("❌ No autorizado.")
@@ -508,27 +435,25 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global bot_active
     bot_active = True
     await update.message.reply_text(
-        "🦂 *IPTV BOT ULTRA — BY LUIS R* 🦂\n\n"
-        "🟢 Bot *ACTIVADO*\n\n"
-        "📌 *Envía directamente la URL:*\n"
-        "`http://portal:8080/get.php?username=USER&password=PASS`\n\n"
-        "📌 *O usa el comando:*\n"
-        "`/check portal:puerto usuario contraseña`\n\n"
-        "🦂 BY LUIS R — 24/7 en Railway",
-        parse_mode=ParseMode.MARKDOWN
+        "🦂 <b>IPTV BOT ULTRA — LUIS R</b> 🦂\n\n"
+        "🟢 Bot <b>ACTIVADO</b>\n\n"
+        "📌 <b>Pega la URL:</b>\n"
+        "<code>http://portal:8080/get.php?username=USER&amp;password=PASS</code>\n\n"
+        "📌 <b>O usa:</b>\n"
+        "<code>/check portal:puerto usuario contraseña</code>\n\n"
+        "🦂 BY LUIS R — 24/7",
+        parse_mode=ParseMode.HTML
     )
-
-
+ 
 async def cmd_stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update):
         await update.message.reply_text("❌ No autorizado.")
         return
     global bot_active
     bot_active = False
-    await update.message.reply_text("🔴 *Bot DETENIDO.*\nUsa /start para reactivarlo.",
-                                    parse_mode=ParseMode.MARKDOWN)
-
-
+    await update.message.reply_text("🔴 <b>Bot DETENIDO.</b>\nUsa /start para reactivarlo.",
+                                    parse_mode=ParseMode.HTML)
+ 
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update):
         await update.message.reply_text("❌ No autorizado.")
@@ -538,117 +463,107 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     m, s   = divmod(rem, 60)
     estado = "🟢 ACTIVO" if bot_active else "🔴 DETENIDO"
     await update.message.reply_text(
-        f"🦂 *ESTADO DEL BOT* 🦂\n\n"
+        f"🦂 <b>ESTADO — LUIS R</b> 🦂\n\n"
         f"📺 Estado: {estado}\n"
         f"⏰ Uptime: {h:02d}h {m:02d}m {s:02d}s\n\n"
         f"✅ Hits: {STATS['hits']}\n"
         f"❌ Fails: {STATS['fails']}\n"
         f"🔄 Retries: {STATS['retries']}\n"
-        f"⭐ Total checks: {STATS['checks']}\n"
+        f"⭐ Total: {STATS['checks']}\n"
         f"👥 Usuarios: {len(STATS['users'])}\n\n"
         f"🦂 BY LUIS R",
-        parse_mode=ParseMode.MARKDOWN
+        parse_mode=ParseMode.HTML
     )
-
-
+ 
 async def cmd_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update) or not bot_active:
         return
     args = context.args
     if len(args) < 3:
         await update.message.reply_text(
-            "📌 *Uso:* `/check portal:puerto usuario contraseña`\n"
-            "🔥 *Ejemplo:* `/check latinchannel.tv:8080 laura.cal cal130325`",
-            parse_mode=ParseMode.MARKDOWN
+            "📌 <b>Uso:</b> <code>/check portal:puerto usuario contraseña</code>\n"
+            "🔥 <b>Ej:</b> <code>/check latinchannel.tv:8080 laura.cal cal130325</code>",
+            parse_mode=ParseMode.HTML
         )
         return
     await do_check(update, args[0], args[1], args[2])
-
-
+ 
 async def cmd_debug(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Diagnóstico completo — muestra exactamente qué responde el servidor."""
     if not is_admin(update):
         return
     args = context.args
     if len(args) < 3:
         await update.message.reply_text(
-            "📌 Uso: `/debug portal:puerto usuario contraseña`",
-            parse_mode=ParseMode.MARKDOWN
+            "📌 <code>/debug portal:puerto usuario contraseña</code>",
+            parse_mode=ParseMode.HTML
         )
         return
     portal, user, pwd = args[0], args[1], args[2]
     msg = await update.message.reply_text("🔬 Ejecutando diagnóstico…")
-
-    lines = [f"🔬 *DIAGNÓSTICO* `{portal}`\n"]
-    for scheme in ("http", "https"):
-        url = f"{scheme}://{portal}/player_api.php?username={user}&password={pwd}"
-        lines.append(f"🔗 *{scheme.upper()}*")
+    host = portal.split(':')[0]
+    port = int(portal.split(':')[1]) if ':' in portal else 8080
+    lines = [f"🔬 <b>DIAGNÓSTICO</b> <code>{portal}</code>\n"]
+    # TCP
+    for p in (port, 443, 80):
         try:
-            r = requests.get(url, headers=HEADERS, timeout=15, verify=False)
-            lines.append(f"  Status: `{r.status_code}`")
-            raw = r.text.strip()
-            lines.append(f"  Respuesta: `{raw[:300]}`")
-            if r.status_code == 200:
-                try:
-                    d = r.json()
-                    ui = d.get("user_info", {})
-                    lines.append(f"  auth: `{ui.get('auth', 'N/A')}`")
-                    lines.append(f"  status: `{ui.get('status', 'N/A')}`")
-                    lines.append(f"  exp\\_date: `{ui.get('exp_date', 'N/A')}`")
-                except Exception:
-                    lines.append("  ❌ JSON inválido")
-        except requests.exceptions.ConnectionError as e:
-            lines.append(f"  ❌ Conexión rechazada")
-        except requests.exceptions.Timeout:
-            lines.append("  ⏱ Timeout >15s")
+            s = socket.create_connection((host, p), timeout=8)
+            s.close()
+            lines.append(f"🔌 TCP ✅ puerto {p}")
+            break
         except Exception as e:
-            lines.append(f"  ❌ Error: `{str(e)[:80]}`")
+            lines.append(f"🔌 TCP ❌ puerto {p}: {str(e)[:40]}")
+    lines.append("")
+    for scheme in ("http","https"):
+        url = f"{scheme}://{portal}/player_api.php?username={user}&password={pwd}"
+        lines.append(f"🔗 <b>{scheme.upper()}</b>")
+        try:
+            r = requests.get(url, headers={"User-Agent": USER_AGENTS[0]},
+                             timeout=15, verify=False)
+            lines.append(f"  Status: <code>{r.status_code}</code>")
+            raw = r.text.strip()[:400].replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")
+            lines.append(f"  Respuesta:\n<code>{raw}</code>")
+        except requests.exceptions.ConnectionError:
+            lines.append("  ❌ Conexión rechazada")
+        except requests.exceptions.Timeout:
+            lines.append("  ⏱ Timeout &gt;15s")
+        except Exception as e:
+            lines.append(f"  ❌ {str(e)[:80]}")
         lines.append("")
-
-    await msg.edit_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
-
-
+    await msg.edit_text("\n".join(lines), parse_mode=ParseMode.HTML)
+ 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🦂 *COMANDOS* 🦂\n\n"
-        "/start — Encender bot\n"
-        "/stop — Apagar bot\n"
-        "/status — Estado y estadísticas\n"
-        "/check `portal usuario pass` — Verificar cuenta\n"
-        "/debug `portal usuario pass` — Diagnóstico detallado\n"
-        "/help — Esta ayuda\n\n"
-        "💡 También puedes pegar cualquier URL M3U directamente.\n\n"
+        "🦂 <b>COMANDOS — LUIS R</b> 🦂\n\n"
+        "/start — 🟢 Encender bot\n"
+        "/stop — 🔴 Apagar bot\n"
+        "/status — 📊 Estado\n"
+        "/check <code>portal user pass</code> — ✅ Verificar\n"
+        "/debug <code>portal user pass</code> — 🔬 Diagnóstico\n"
+        "/help — ❓ Ayuda\n\n"
+        "💡 Pega cualquier URL M3U directamente.\n\n"
         "🦂 BY LUIS R",
-        parse_mode=ParseMode.MARKDOWN
+        parse_mode=ParseMode.HTML
     )
-
-
+ 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Maneja mensajes de texto: detecta URLs IPTV automáticamente."""
     if not is_admin(update) or not bot_active:
         return
     text = (update.message.text or "").strip()
     portal, user, pwd = extract_from_url(text)
     if portal and user and pwd:
         await do_check(update, portal, user, pwd)
-    # Si no es una URL IPTV, ignorar silenciosamente
-
-# ═══════════════════════════════════════════
+ 
+# ══════════════════════════════════════════
 #  MAIN
-# ═══════════════════════════════════════════
-
+# ══════════════════════════════════════════
+ 
 def main():
     if not BOT_TOKEN:
-        log.error("❌ BOT_TOKEN no configurado. Agrega la variable de entorno.")
+        log.error("❌ BOT_TOKEN no configurado.")
         return
-
-    # Keep-alive en segundo plano
     threading.Thread(target=keep_alive, daemon=True).start()
-
-    log.info("🦂 IPTV BOT ULTRA arrancando…")
-
+    log.info("🦂 IPTV BOT ULTRA — LUIS R — Iniciando…")
     app = Application.builder().token(BOT_TOKEN).build()
-
     app.add_handler(CommandHandler("start",  cmd_start))
     app.add_handler(CommandHandler("stop",   cmd_stop))
     app.add_handler(CommandHandler("status", cmd_status))
@@ -656,10 +571,8 @@ def main():
     app.add_handler(CommandHandler("debug",  cmd_debug))
     app.add_handler(CommandHandler("help",   cmd_help))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-
-    log.info("✅ Bot iniciado — esperando mensajes.")
+    log.info("✅ Bot listo.")
     app.run_polling(drop_pending_updates=True)
-
-
+ 
 if __name__ == "__main__":
     main()
