@@ -1,15 +1,7 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-╔══════════════════════════════════════════════════════════════════════════════╗
-║         🦂 IPTV BOT ULTRA SUPREMO — BY LUIS R 🦂                            ║
-║              CON JCHECKER + CLOUDFLARE BYPASS                               ║
-╚══════════════════════════════════════════════════════════════════════════════╝
-"""
-
 import os
-import sys
 import re
+import requests
 import json
 import time
 import threading
@@ -17,33 +9,6 @@ from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 from telegram.constants import ParseMode
-
-# ============================================================
-# IMPORTAR JCHECKER Y CLOUDFLARE BYPASS
-# ============================================================
-sys.path.insert(0, os.getcwd())
-
-JCHECKER_AVAILABLE = False
-CLOUDFLARE_AVAILABLE = False
-
-try:
-    from jchecker_6 import c_datos, get_or_fetch_server_content, proxy_manager
-    JCHECKER_AVAILABLE = True
-    print("✅ JChecker v5.7 cargado correctamente")
-except ImportError as e:
-    print(f"⚠️ JChecker no disponible: {e}")
-
-try:
-    from cloudflare_bypass import (
-        is_cloudflare_protected, 
-        check_account_with_cloudflare_bypass,
-        get_content_with_cloudflare_bypass,
-        get_categories_with_cloudflare_bypass
-    )
-    CLOUDFLARE_AVAILABLE = True
-    print("✅ Cloudflare Bypass cargado correctamente")
-except ImportError as e:
-    print(f"⚠️ Cloudflare Bypass no disponible: {e}")
 
 # ============================================================
 # CONFIGURACIÓN
@@ -56,151 +21,155 @@ bot_active = True
 BOT_START_TIME = datetime.now()
 STATS = {"checks": 0, "hits": 0, "users": set()}
 
-# Emojis
+# Diseño
 S = "═" * 55
 ICONS = {
     "valid": "✅", "invalid": "❌", "warning": "⚠️", "active": "🟢",
     "inactive": "🔴", "tv": "📺", "movie": "🎬", "series": "📹",
-    "globe": "🌐", "user": "👤", "pass": "🔑", "date": "📅",
-    "time": "⏰", "connections": "👥", "location": "📍", "link": "🔗",
-    "scorpion": "🦂", "fire": "🔥", "crown": "👑", "star": "⭐", "fast": "⚡"
+    "user": "👤", "pass": "🔑", "date": "📅", "time": "⏰",
+    "connections": "👥", "location": "📍", "link": "🔗",
+    "scorpion": "🦂", "crown": "👑"
 }
 
 # ============================================================
-# FUNCIONES DE EXTRACCIÓN
+# FUNCIONES PRINCIPALES
 # ============================================================
+
 def extract_from_url(url: str):
     """Extrae portal, usuario y contraseña de URLs IPTV"""
-    patterns = [
-        r'//([^/]+)/get\.php\?username=([^&]+)&password=([^&]+)',
-        r'//([^/]+)/player_api\.php\?username=([^&]+)&password=([^&]+)',
-        r'//([^/]+)/playlist/([^/]+)/([^/]+)',
-        r'//([^/]+)/c/.*?/([^/]+)/([^/]+)',
-    ]
-    for pattern in patterns:
-        match = re.search(pattern, url)
-        if match:
-            return match.group(1), match.group(2), match.group(3)
+    # Formato: http://portal/get.php?username=user&password=pass
+    match = re.search(r'//([^/]+)/get\.php\?username=([^&]+)&password=([^&]+)', url)
+    if match:
+        return match.group(1), match.group(2), match.group(3)
+    
+    # Formato: http://portal/player_api.php?username=user&password=pass
+    match = re.search(r'//([^/]+)/player_api\.php\?username=([^&]+)&password=([^&]+)', url)
+    if match:
+        return match.group(1), match.group(2), match.group(3)
+    
+    # Formato: portal|user|pass
     if '|' in url:
         parts = url.split('|')
         if len(parts) == 3:
             return parts[0], parts[1], parts[2]
+    
+    # Formato: portal user pass (separado por espacios)
     parts = url.split()
     if len(parts) == 3 and ':' in parts[0]:
         return parts[0], parts[1], parts[2]
+    
     return None, None, None
 
-# ============================================================
-# VERIFICACIÓN CON JCHECKER
-# ============================================================
-def verify_account_supreme(portal: str, user: str, pwd: str):
-    """Verifica usando JChecker o Cloudflare Bypass si están disponibles"""
-    base_url = f"http://{portal}"
+def verify_account(portal: str, user: str, pwd: str):
+    """Verifica cuenta IPTV"""
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Accept': 'application/json, text/plain, */*',
+        'Connection': 'keep-alive'
+    }
     
-    # 1. Intentar con Cloudflare Bypass si está disponible
-    if CLOUDFLARE_AVAILABLE and is_cloudflare_protected(portal):
-        print(f"🌙 Usando Cloudflare bypass para {portal}")
-        try:
-            result = check_account_with_cloudflare_bypass(base_url, user, pwd)
-            if result and result.get('status') == 'hit':
-                return {
-                    'user_info': result.get('user_info', {}),
-                    'server_info': {},
-                    'is_xui': False,
-                    'live': result.get('live_count', '?'),
-                    'vod': result.get('vod_count', '?'),
-                    'series': result.get('series_count', '?'),
-                    'categories': result.get('categories', '')
-                }
-        except Exception as e:
-            print(f"Error en Cloudflare bypass: {e}")
-    
-    # 2. Intentar con JChecker
-    if JCHECKER_AVAILABLE:
-        try:
-            # Usar c_datos para obtener conteos
-            live, vod, series = c_datos(base_url, user, pwd)
-            
-            # Verificar credenciales
-            url = f"{base_url}/player_api.php?username={user}&password={pwd}"
-            import requests
-            r = requests.get(url, timeout=15, verify=False)
-            if r.status_code == 200:
-                data = r.json()
-                if data.get('user_info', {}).get('auth') == 1:
-                    return {
-                        'user_info': data['user_info'],
-                        'server_info': data.get('server_info', {}),
-                        'is_xui': bool(data.get('server_info', {}).get('xui', False)),
-                        'live': live,
-                        'vod': vod,
-                        'series': series,
-                        'categories': ''
-                    }
-        except Exception as e:
-            print(f"Error en JChecker: {e}")
-    
-    # 3. Verificación directa como fallback
     try:
-        import requests
         url = f"http://{portal}/player_api.php?username={user}&password={pwd}"
-        r = requests.get(url, timeout=10, verify=False)
+        print(f"🔍 Verificando: {url}")
+        
+        r = requests.get(url, timeout=15, verify=False, headers=headers)
+        print(f"📡 Respuesta: {r.status_code}")
+        
+        if r.status_code != 200:
+            return None
+        
+        data = r.json()
+        user_info = data.get('user_info', {})
+        
+        if user_info.get('auth') == 1:
+            return {
+                'user_info': user_info,
+                'server_info': data.get('server_info', {}),
+                'is_xui': bool(data.get('server_info', {}).get('xui', False))
+            }
+        return None
+    except requests.exceptions.Timeout:
+        print("⏱️ Timeout")
+        return None
+    except Exception as e:
+        print(f"❌ Error: {e}")
+        return None
+
+def get_content_counts(portal: str, user: str, pwd: str):
+    """Obtiene conteos de canales, películas y series"""
+    live = vod = series = "?"
+    
+    try:
+        url = f"http://{portal}/player_api.php?username={user}&password={pwd}&action=get_live_streams"
+        r = requests.get(url, timeout=15, verify=False)
         if r.status_code == 200:
             data = r.json()
-            if data.get('user_info', {}).get('auth') == 1:
-                return {
-                    'user_info': data['user_info'],
-                    'server_info': data.get('server_info', {}),
-                    'is_xui': False,
-                    'live': '?',
-                    'vod': '?',
-                    'series': '?',
-                    'categories': ''
-                }
+            live = str(len(data)) if isinstance(data, list) else "?"
     except:
         pass
     
-    return None
-
-def get_categories_supreme(portal: str, user: str, pwd: str):
-    """Obtiene categorías usando Cloudflare Bypass si está disponible"""
-    base_url = f"http://{portal}"
-    
-    if CLOUDFLARE_AVAILABLE and is_cloudflare_protected(portal):
-        try:
-            categories = get_categories_with_cloudflare_bypass(base_url, user, pwd)
-            if categories:
-                return categories
-        except:
-            pass
+    try:
+        url = f"http://{portal}/player_api.php?username={user}&password={pwd}&action=get_vod_streams"
+        r = requests.get(url, timeout=15, verify=False)
+        if r.status_code == 200:
+            data = r.json()
+            vod = str(len(data)) if isinstance(data, list) else "?"
+    except:
+        pass
     
     try:
-        import requests
-        url = f"{base_url}/player_api.php?username={user}&password={pwd}&action=get_live_categories"
-        r = requests.get(url, timeout=10, verify=False)
+        url = f"http://{portal}/player_api.php?username={user}&password={pwd}&action=get_series"
+        r = requests.get(url, timeout=15, verify=False)
+        if r.status_code == 200:
+            data = r.json()
+            series = str(len(data)) if isinstance(data, list) else "?"
+    except:
+        pass
+    
+    return live, vod, series
+
+def get_categories(portal: str, user: str, pwd: str, limit: int = 12):
+    """Obtiene categorías de canales"""
+    try:
+        url = f"http://{portal}/player_api.php?username={user}&password={pwd}&action=get_live_categories"
+        r = requests.get(url, timeout=15, verify=False)
         if r.status_code == 200:
             cats = r.json()
             if isinstance(cats, list):
                 result = []
-                for cat in cats[:15]:
+                for cat in cats[:limit]:
                     name = cat.get('category_name', '').replace('\\/', '/').strip()
                     if name:
                         result.append(f"  {ICONS['tv']} {name}")
-                if len(cats) > 15:
-                    result.append(f"  {ICONS['star']} ...y {len(cats)-15} más")
+                if len(cats) > limit:
+                    result.append(f"  {ICONS['crown']} ...y {len(cats)-limit} más")
                 return '\n'.join(result)
     except:
         pass
     return ""
 
-# ============================================================
-# FORMATEO DE TARJETA
-# ============================================================
-def format_supreme_card(portal: str, user: str, pwd: str, result: dict, tg_user: str = "") -> str:
+def get_server_location(portal: str):
+    """Obtiene ubicación del servidor"""
+    try:
+        ip = portal.split(':')[0]
+        r = requests.get(f'http://ip-api.com/json/{ip}', timeout=5)
+        if r.status_code == 200:
+            data = r.json()
+            if data.get('status') == 'success':
+                country = data.get('country', 'Desconocido')
+                code = data.get('countryCode', '')
+                flags = {'US': '🇺🇸', 'MX': '🇲🇽', 'ES': '🇪🇸', 'AR': '🇦🇷', 
+                         'CO': '🇨🇴', 'CL': '🇨🇱', 'PE': '🇵🇪', 'VE': '🇻🇪'}
+                return f"{country} {flags.get(code, '🌍')}"
+    except:
+        pass
+    return "Desconocido 🌍"
+
+def format_supreme_card(portal: str, user: str, pwd: str, result: dict, live: str, vod: str, series: str) -> str:
+    """Formatea la tarjeta de información"""
     ui = result.get('user_info', {})
-    si = result.get('server_info', {})
     
-    # Fechas
+    # Fecha de expiración
     expire = ui.get('exp_date', 'No expira')
     expire_str = "No expira"
     if expire and str(expire).isdigit() and int(expire) > 0:
@@ -209,6 +178,7 @@ def format_supreme_card(portal: str, user: str, pwd: str, result: dict, tg_user:
         except:
             expire_str = str(expire)
     
+    # Fecha de creación
     created = ui.get('created_at', None)
     created_str = "No disponible"
     if created and str(created).isdigit() and int(created) > 0:
@@ -222,40 +192,14 @@ def format_supreme_card(portal: str, user: str, pwd: str, result: dict, tg_user:
     max_con = ui.get('max_connections', '0')
     status = ui.get('status', 'Active')
     is_trial = "Trial" if "trial" in user.lower() else "No Trial"
-    
-    # País (simplificado)
-    country = "Desconocido 🌍"
-    try:
-        import socket
-        import requests
-        ip = portal.split(':')[0]
-        r = requests.get(f'http://ip-api.com/json/{ip}', timeout=3)
-        if r.status_code == 200:
-            data = r.json()
-            if data.get('status') == 'success':
-                country = data.get('country', 'Desconocido')
-                code = data.get('countryCode', '')
-                flags = {'US': '🇺🇸', 'MX': '🇲🇽', 'ES': '🇪🇸', 'AR': '🇦🇷', 'CO': '🇨🇴', 'CL': '🇨🇱', 'PE': '🇵🇪'}
-                country = f"{country} {flags.get(code, '🌍')}"
-    except:
-        pass
-    
-    # Conteos
-    live = result.get('live', '?')
-    vod = result.get('vod', '?')
-    series = result.get('series', '?')
+    location = get_server_location(portal)
     
     # Enlaces
-    is_xui = result.get('is_xui', False)
-    if is_xui:
-        m3u_link = f"http://{portal}/playlist/{user}/{pwd}/m3u_plus"
-        epg_link = f"http://{portal}/playlist/{user}/{pwd}/xmltv"
-    else:
-        m3u_link = f"http://{portal}/get.php?username={user}&password={pwd}&type=m3u_plus"
-        epg_link = f"http://{portal}/xmltv.php?username={user}&password={pwd}"
+    m3u_link = f"http://{portal}/get.php?username={user}&password={pwd}&type=m3u_plus"
+    epg_link = f"http://{portal}/xmltv.php?username={user}&password={pwd}"
     
     # Categorías
-    categories = get_categories_supreme(portal, user, pwd)
+    categories = get_categories(portal, user, pwd)
     
     # Construcción
     card = f"""
@@ -269,7 +213,7 @@ def format_supreme_card(portal: str, user: str, pwd: str, result: dict, tg_user:
 📅 𝐂𝐫𝐞𝐚𝐝𝐚: {created_str}
 ⏰ 𝐄𝐱𝐩𝐢𝐫𝐚: {expire_str}
 👥 𝐂𝐨𝐧𝐞𝐱𝐢𝐨𝐧𝐞𝐬: {active} / {max_con}
-📍 𝐔𝐛𝐢𝐜𝐚𝐜𝐢ó𝐧: {country}
+📍 𝐔𝐛𝐢𝐜𝐚𝐜𝐢ó𝐧: {location}
 ⭐ 𝐓𝐢𝐩𝐨: {is_trial}
 {S}
 🔥 𝐂𝐎𝐍𝐓𝐄𝐍𝐈𝐃𝐎 𝐃𝐈𝐒𝐏𝐎𝐍𝐈𝐁𝐋𝐄 🔥
@@ -310,7 +254,7 @@ def format_invalid_card(portal: str, user: str) -> str:
 ⚠️ 𝐏𝐨𝐬𝐢𝐛𝐥𝐞𝐬 𝐜𝐚𝐮𝐬𝐚𝐬:
 ⚠️ • Credenciales incorrectas
 ⚠️ • Servidor caído o lento
-⚠️ • Servidor protegido (Cloudflare)
+⚠️ • Servidor protegido
 {S}
 👑 𝐕𝐞𝐫𝐢𝐟𝐢𝐜𝐚𝐝𝐨 𝐩𝐨𝐫 𝐋𝐔𝐈𝐒 𝐑 👑
 📅 {datetime.now().strftime('%d/%m/%Y - %H:%M:%S')}
@@ -324,14 +268,13 @@ def keep_alive_loop():
     if RENDER_URL:
         while True:
             try:
-                import requests
                 requests.get(RENDER_URL, timeout=5)
             except:
                 pass
             time.sleep(600)
 
 # ============================================================
-# COMANDOS
+# COMANDOS DE TELEGRAM
 # ============================================================
 def is_admin(update: Update) -> bool:
     return update.effective_user.id == ADMIN_ID
@@ -345,10 +288,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     STATS["users"].add(update.effective_user.id)
     await update.message.reply_text(
         f"🦂 *ＢＯＴ ＩＰＴＶ ＵＬＴＲＡ* 🦂\n\n"
-        f"🟢 Bot *ACTIVADO*\n"
-        f"🔥 JChecker integrado\n"
-        f"🌙 Cloudflare Bypass activado\n\n"
-        f"📺 Envía una URL o usa /check\n"
+        f"🟢 Bot *ACTIVADO*\n\n"
+        f"📺 *Envía una URL completa:*\n"
+        f"`http://portal:8080/get.php?username=user&password=pass`\n\n"
+        f"📝 *O usa el comando:*\n"
+        f"`/check portal:8080 usuario pass`\n\n"
         f"🦂 BY LUIS R",
         parse_mode=ParseMode.MARKDOWN
     )
@@ -369,17 +313,13 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uptime = datetime.now() - BOT_START_TIME
     hours, rem = divmod(int(uptime.total_seconds()), 3600)
     mins, secs = divmod(rem, 60)
-    jc = "✅" if JCHECKER_AVAILABLE else "❌"
-    cf = "✅" if CLOUDFLARE_AVAILABLE else "❌"
     await update.message.reply_text(
         f"🦂 *ＥＳＴＡＤＯ* 🦂\n\n"
         f"📺 Estado: {estado}\n"
         f"⏰ Activo: {hours:02d}h {mins:02d}m {secs:02d}s\n"
         f"⭐ Checks: {STATS['checks']}\n"
         f"✅ Hits: {STATS['hits']}\n"
-        f"👥 Usuarios: {len(STATS['users'])}\n"
-        f"📦 JChecker: {jc}\n"
-        f"🌙 Cloudflare: {cf}\n\n"
+        f"👥 Usuarios: {len(STATS['users'])}\n\n"
         f"🦂 BY LUIS R",
         parse_mode=ParseMode.MARKDOWN
     )
@@ -388,22 +328,29 @@ async def check_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global bot_active
     if not bot_active or not is_admin(update):
         return
+    
     args = context.args
     if len(args) < 3:
         await update.message.reply_text(
             f"📺 *Uso:* `/check portal:puerto usuario pass`\n"
-            f"🔥 *Ejemplo:* `/check latinchannel.tv:8080 user pass`",
+            f"🔥 *Ejemplo:* `/check latinchannel.tv:8080 user pass`\n\n"
+            f"📎 *O envía la URL completa:*\n"
+            f"`http://portal:8080/get.php?username=user&password=pass`",
             parse_mode=ParseMode.MARKDOWN
         )
         return
+    
     portal, user, pwd = args[0], args[1], args[2]
     msg = await update.message.reply_text(f"🦂 *Verificando cuenta...* 🦂", parse_mode=ParseMode.MARKDOWN)
+    
     STATS["checks"] += 1
-    result = verify_account_supreme(portal, user, pwd)
+    result = verify_account(portal, user, pwd)
+    
     if result:
         STATS["hits"] += 1
-        tg_user = update.effective_user.username or update.effective_user.first_name
-        card = format_supreme_card(portal, user, pwd, result, tg_user)
+        await msg.edit_text(f"📡 *Obteniendo contenido del servidor...*", parse_mode=ParseMode.MARKDOWN)
+        live, vod, series = get_content_counts(portal, user, pwd)
+        card = format_supreme_card(portal, user, pwd, result, live, vod, series)
         await msg.edit_text(card, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
     else:
         card = format_invalid_card(portal, user)
@@ -412,11 +359,21 @@ async def check_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not bot_active or not is_admin(update):
         return
+    
     text = update.message.text.strip()
     portal, user, pwd = extract_from_url(text)
+    
     if portal and user and pwd:
         context.args = [portal, user, pwd]
         await check_command(update, context)
+    else:
+        await update.message.reply_text(
+            f"🦂 *BY LUIS R* 🦂\n\n"
+            f"📺 *Envía una URL en este formato:*\n"
+            f"`http://portal:8080/get.php?username=user&password=pass`\n\n"
+            f"📝 *O usa:* `/check portal:8080 usuario pass`",
+            parse_mode=ParseMode.MARKDOWN
+        )
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
@@ -426,9 +383,9 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"⭐ /status - Estado del bot\n"
         f"✅ /check - Verificar cuenta\n"
         f"🦂 /help - Esta ayuda\n\n"
-        f"🔥 *URLs soportadas:*\n"
-        f"• http://portal/get.php?username=user&password=pass\n"
-        f"• http://portal/player_api.php?username=user&password=pass\n\n"
+        f"🔥 *EJEMPLOS:*\n"
+        f"`/check latinchannel.tv:8080 user pass`\n"
+        f"`http://latinchannel.tv:8080/get.php?username=user&password=pass`\n\n"
         f"🦂 BY LUIS R",
         parse_mode=ParseMode.MARKDOWN
     )
@@ -440,19 +397,24 @@ def main():
     if not BOT_TOKEN:
         print("❌ ERROR: BOT_TOKEN no configurado")
         return
+    
     if RENDER_URL:
         threading.Thread(target=keep_alive_loop, daemon=True).start()
-    print("🦂 IPTV BOT ULTRA SUPREMO - BY LUIS R")
-    print(f"📦 JChecker disponible: {JCHECKER_AVAILABLE}")
-    print(f"🌙 Cloudflare disponible: {CLOUDFLARE_AVAILABLE}")
+    
+    print("🦂 IPTV BOT ULTRA - BY LUIS R")
+    print(f"📺 Bot Token: {BOT_TOKEN[:10]}...")
+    print(f"👑 Admin ID: {ADMIN_ID}")
+    
     app = Application.builder().token(BOT_TOKEN).build()
+    
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("stop", stop))
     app.add_handler(CommandHandler("status", status_command))
     app.add_handler(CommandHandler("check", check_command))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_url))
-    print("✅ Bot iniciado correctamente")
+    
+    print("✅ Bot iniciado correctamente - Esperando mensajes...")
     app.run_polling()
 
 if __name__ == "__main__":
