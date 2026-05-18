@@ -110,71 +110,132 @@ def verify_account(portal: str, user: str, pwd: str) -> tuple[str, dict | None]:
     """
     Lógica de verificación:
       • HIT    → auth=1 y status='Active'
-      • CUSTOM → auth=1 pero status != 'Active'  (cuenta existe pero vencida/suspendida)
-      • FAIL   → auth=0  (credenciales incorrectas)
+      • CUSTOM → auth=1 pero status != 'Active'
+      • FAIL   → auth=0
       • RETRY  → Sin respuesta, JSON inválido, estructura inesperada
     """
-    # Intentar primero con player_api.php
+    # Múltiples User-Agents para evitar bloqueos
+    user_agents = [
+        "VLC/3.0.18 LibVLC/3.0.18",
+        "Kodi/19.4 (Windows NT 10.0; Win64; x64)",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "TiviMate/4.4.0 (Android 11)",
+        "IPTV Smarters Pro/3.0.9.4 (Android 10)",
+    ]
+
+    for scheme in ("http", "https"):
+        for ua in user_agents[:2]:   # probar 2 UAs por scheme
+            url = f"{scheme}://{portal}/player_api.php?username={user}&password={pwd}"
+            try:
+                resp = requests.get(
+                    url,
+                    headers={"User-Agent": ua, "Accept": "*/*", "Connection": "keep-alive"},
+                    timeout=20,
+                    verify=False,
+                    allow_redirects=True
+                )
+            except Exception as e:
+                log.warning(f"Red error {scheme}: {e}")
+                continue
+
+            if resp.status_code != 200:
+                log.warning(f"HTTP {resp.status_code} en {portal}")
+                continue
+
+            raw = resp.text.strip()
+
+            # HTML = Cloudflare u otro bloqueo
+            if raw.startswith("<"):
+                log.warning("Respuesta HTML, probando siguiente UA")
+                continue
+
+            # Intentar JSON
+            try:
+                data = json.loads(raw)
+            except json.JSONDecodeError:
+                # Algunos servidores mandan datos válidos pero con basura al inicio
+                try:
+                    start = raw.find("{")
+                    if start >= 0:
+                        data = json.loads(raw[start:])
+                    else:
+                        continue
+                except Exception:
+                    continue
+
+            if not isinstance(data, dict):
+                continue
+
+            # ── Sin user_info: buscar datos directamente ──────────────────
+            if "user_info" not in data:
+                # Algunos servidores mandan auth directamente
+                auth = data.get("auth")
+                if auth is not None:
+                    try:
+                        auth = int(auth)
+                        if auth == 0:
+                            return "FAIL", None
+                        if auth == 1:
+                            return "HIT", {"user_info": data, "server_info": {}}
+                    except Exception:
+                        pass
+                log.warning("Sin user_info en respuesta")
+                continue
+
+            ui   = data["user_info"]
+            auth = ui.get("auth")
+
+            if auth is None:
+                continue
+
+            try:
+                auth = int(auth)
+            except (ValueError, TypeError):
+                continue
+
+            if auth == 0:
+                return "FAIL", None
+
+            if auth == 1:
+                status  = ui.get("status", "")
+                payload = {"user_info": ui, "server_info": data.get("server_info", {})}
+                if status == "Active":
+                    return "HIT", payload
+                else:
+                    return "CUSTOM", payload
+
+    return "RETRY", None
+
+
+def debug_portal(portal: str, user: str, pwd: str) -> str:
+    """Diagnóstico detallado de un portal para saber exactamente qué falla."""
+    lines = [f"🔬 *DIAGNÓSTICO* — `{portal}`\n"]
+
     for scheme in ("http", "https"):
         url = f"{scheme}://{portal}/player_api.php?username={user}&password={pwd}"
-        resp = _get(url)
-
-        if resp is None:
-            continue                            # error de red → probar https / RETRY final
-
-        if resp.status_code != 200:
-            log.warning(f"HTTP {resp.status_code} en {portal}")
-            continue
-
-        # ── Intentar parsear JSON ──────────────────────────────────────────
-        raw = resp.text.strip()
-
-        # A veces el servidor manda HTML de Cloudflare en vez de JSON
-        if raw.startswith("<"):
-            log.warning("Respuesta HTML (posible Cloudflare)")
-            return "RETRY", None
-
+        lines.append(f"🔗 Probando: `{scheme}`")
         try:
-            data = json.loads(raw)
-        except json.JSONDecodeError:
-            log.warning("JSON inválido")
-            return "RETRY", None
+            r = requests.get(url, headers=HEADERS, timeout=15, verify=False)
+            lines.append(f"  ✅ HTTP Status: `{r.status_code}`")
+            raw = r.text.strip()[:200]
+            lines.append(f"  📄 Respuesta: `{raw}`")
+            if r.status_code == 200:
+                try:
+                    d = r.json()
+                    ui = d.get("user_info", {})
+                    lines.append(f"  🔑 auth: `{ui.get('auth', 'N/A')}`")
+                    lines.append(f"  🆙 status: `{ui.get('status', 'N/A')}`")
+                except Exception:
+                    lines.append("  ❌ JSON inválido")
+        except requests.exceptions.ConnectionError as e:
+            lines.append(f"  ❌ Conexión rechazada: `{str(e)[:80]}`")
+        except requests.exceptions.Timeout:
+            lines.append("  ⏱ Timeout (>15s)")
+        except Exception as e:
+            lines.append(f"  ❌ Error: `{str(e)[:80]}`")
+        lines.append("")
 
-        # ── Verificar estructura ───────────────────────────────────────────
-        if not isinstance(data, dict) or "user_info" not in data:
-            log.warning("Estructura inesperada (sin user_info)")
-            return "RETRY", None
-
-        ui   = data["user_info"]
-        auth = ui.get("auth")
-
-        if auth is None:
-            return "RETRY", None
-
-        try:
-            auth = int(auth)
-        except (ValueError, TypeError):
-            return "RETRY", None
-
-        if auth == 0:
-            return "FAIL", None
-
-        if auth == 1:
-            status = ui.get("status", "")
-            payload = {
-                "user_info":   ui,
-                "server_info": data.get("server_info", {}),
-            }
-            if status == "Active":
-                return "HIT", payload
-            else:
-                return "CUSTOM", payload          # cuenta existe pero no activa
-
-        # auth con valor no reconocido
-        return "RETRY", None
-
-    # Ningún scheme funcionó
-    return "RETRY", None
+    return "\n".join(lines)
 
 # ═══════════════════════════════════════════
 #  DATOS ADICIONALES
@@ -504,6 +565,49 @@ async def cmd_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await do_check(update, args[0], args[1], args[2])
 
 
+async def cmd_debug(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Diagnóstico completo — muestra exactamente qué responde el servidor."""
+    if not is_admin(update):
+        return
+    args = context.args
+    if len(args) < 3:
+        await update.message.reply_text(
+            "📌 Uso: `/debug portal:puerto usuario contraseña`",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return
+    portal, user, pwd = args[0], args[1], args[2]
+    msg = await update.message.reply_text("🔬 Ejecutando diagnóstico…")
+
+    lines = [f"🔬 *DIAGNÓSTICO* `{portal}`\n"]
+    for scheme in ("http", "https"):
+        url = f"{scheme}://{portal}/player_api.php?username={user}&password={pwd}"
+        lines.append(f"🔗 *{scheme.upper()}*")
+        try:
+            r = requests.get(url, headers=HEADERS, timeout=15, verify=False)
+            lines.append(f"  Status: `{r.status_code}`")
+            raw = r.text.strip()
+            lines.append(f"  Respuesta: `{raw[:300]}`")
+            if r.status_code == 200:
+                try:
+                    d = r.json()
+                    ui = d.get("user_info", {})
+                    lines.append(f"  auth: `{ui.get('auth', 'N/A')}`")
+                    lines.append(f"  status: `{ui.get('status', 'N/A')}`")
+                    lines.append(f"  exp\\_date: `{ui.get('exp_date', 'N/A')}`")
+                except Exception:
+                    lines.append("  ❌ JSON inválido")
+        except requests.exceptions.ConnectionError as e:
+            lines.append(f"  ❌ Conexión rechazada")
+        except requests.exceptions.Timeout:
+            lines.append("  ⏱ Timeout >15s")
+        except Exception as e:
+            lines.append(f"  ❌ Error: `{str(e)[:80]}`")
+        lines.append("")
+
+    await msg.edit_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
+
+
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🦂 *COMANDOS* 🦂\n\n"
@@ -511,6 +615,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/stop — Apagar bot\n"
         "/status — Estado y estadísticas\n"
         "/check `portal usuario pass` — Verificar cuenta\n"
+        "/debug `portal usuario pass` — Diagnóstico detallado\n"
         "/help — Esta ayuda\n\n"
         "💡 También puedes pegar cualquier URL M3U directamente.\n\n"
         "🦂 BY LUIS R",
@@ -548,6 +653,7 @@ def main():
     app.add_handler(CommandHandler("stop",   cmd_stop))
     app.add_handler(CommandHandler("status", cmd_status))
     app.add_handler(CommandHandler("check",  cmd_check))
+    app.add_handler(CommandHandler("debug",  cmd_debug))
     app.add_handler(CommandHandler("help",   cmd_help))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
