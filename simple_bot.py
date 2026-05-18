@@ -2,8 +2,8 @@
 # -*- coding: utf-8 -*-
 """
 ╔══════════════════════════════════════════════════════════════════════════════╗
-║              🦂 IPTV BOT ULTRA FUNCIONAL — BY LUIS R 🦂                     ║
-║                          VERSIÓN DEFINITIVA                                 ║
+║              🦂 IPTV BOT ULTIMA GENERACIÓN — BY LUIS R 🦂                    ║
+║                    CON LÓGICA PERFECTA DE VERIFICACIÓN                       ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
 """
 
@@ -14,8 +14,8 @@ import json
 import time
 import threading
 from datetime import datetime
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
+from telegram import Update
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from telegram.constants import ParseMode
 
 # ============================================================
@@ -27,7 +27,7 @@ RENDER_URL = os.getenv("RENDER_URL", "")
 
 bot_active = True
 BOT_START_TIME = datetime.now()
-STATS = {"checks": 0, "hits": 0, "users": set()}
+STATS = {"checks": 0, "hits": 0, "retries": 0, "fails": 0, "users": set()}
 
 # Diseño
 S = "═" * 55
@@ -36,32 +36,31 @@ ICONS = {
     "inactive": "🔴", "tv": "📺", "movie": "🎬", "series": "📹",
     "user": "👤", "pass": "🔑", "date": "📅", "time": "⏰",
     "connections": "👥", "location": "📍", "link": "🔗",
-    "scorpion": "🦂", "crown": "👑", "fire": "🔥", "star": "⭐"
+    "scorpion": "🦂", "crown": "👑", "fire": "🔥", "star": "⭐", "retry": "🔄"
 }
 
 # ============================================================
-# FUNCIONES DE EXTRACCIÓN
+# EXTRACCIÓN DE URLS
 # ============================================================
 
 def extract_from_url(url: str):
     """Extrae portal, usuario y contraseña de cualquier URL IPTV"""
-    # Formato 1: http://portal/get.php?username=user&password=pass
-    match = re.search(r'//([^/]+)/get\.php\?username=([^&]+)&password=([^&]+)', url)
-    if match:
-        return match.group(1), match.group(2), match.group(3)
+    patterns = [
+        r'//([^/]+)/get\.php\?username=([^&]+)&password=([^&]+)',
+        r'//([^/]+)/player_api\.php\?username=([^&]+)&password=([^&]+)',
+        r'//([^/]+)/playlist/([^/]+)/([^/]+)',
+        r'//([^/]+)/c/.*?/([^/]+)/([^/]+)',
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, url)
+        if match:
+            return match.group(1), match.group(2), match.group(3)
     
-    # Formato 2: http://portal/player_api.php?username=user&password=pass
-    match = re.search(r'//([^/]+)/player_api\.php\?username=([^&]+)&password=([^&]+)', url)
-    if match:
-        return match.group(1), match.group(2), match.group(3)
-    
-    # Formato 3: portal|user|pass
     if '|' in url:
         parts = url.split('|')
         if len(parts) == 3:
             return parts[0], parts[1], parts[2]
     
-    # Formato 4: portal user pass (separado por espacios)
     parts = url.split()
     if len(parts) == 3 and ':' in parts[0]:
         return parts[0], parts[1], parts[2]
@@ -69,50 +68,100 @@ def extract_from_url(url: str):
     return None, None, None
 
 # ============================================================
-# VERIFICACIÓN DE CUENTA (CORREGIDA)
+# VERIFICACIÓN CON LÓGICA PERFECTA
 # ============================================================
 
-def verify_account(portal: str, user: str, pwd: str):
-    """Verifica cuenta IPTV con headers correctos"""
-    # Headers que simulan un reproductor real
+def verify_account_smart(portal: str, user: str, pwd: str):
+    """
+    Verifica cuenta IPTV con lógica correcta:
+    - Status Active + auth=1 → HIT
+    - auth=0 → FAIL
+    - Sin respuesta → RETRY
+    - JSON inválido → RETRY
+    """
     headers = {
         'User-Agent': 'VLC/3.0.16 LibVLC/3.0.16',
         'Accept': '*/*',
-        'Connection': 'keep-alive',
-        'Accept-Language': 'en-US,en;q=0.9',
-        'Accept-Encoding': 'gzip, deflate'
+        'Connection': 'keep-alive'
     }
     
     try:
         url = f"http://{portal}/player_api.php?username={user}&password={pwd}"
         print(f"🔍 Verificando: {url}")
         
-        r = requests.get(url, timeout=20, verify=False, headers=headers)
-        print(f"📡 Respuesta: {r.status_code}")
+        r = requests.get(url, timeout=15, verify=False, headers=headers)
+        print(f"📡 Status Code: {r.status_code}")
         
+        # Si no hay respuesta exitosa del servidor → RETRY
         if r.status_code != 200:
-            return None
+            print(f"⚠️ Servidor respondió con {r.status_code} → RETRY")
+            return "RETRY", None
         
-        data = r.json()
+        # Intentar parsear JSON
+        try:
+            data = r.json()
+        except json.JSONDecodeError:
+            print("❌ Respuesta no es JSON válido → RETRY")
+            return "RETRY", None
+        
+        # Verificar estructura de datos
+        if 'user_info' not in data:
+            print("⚠️ Respuesta sin 'user_info' → RETRY")
+            return "RETRY", None
+        
         user_info = data.get('user_info', {})
         
-        if user_info.get('auth') == 1:
-            return {
-                'user_info': user_info,
-                'server_info': data.get('server_info', {}),
-                'is_xui': bool(data.get('server_info', {}).get('xui', False))
-            }
-        return None
+        # Verificar auth
+        auth = user_info.get('auth')
+        if auth is None:
+            print("⚠️ Campo 'auth' no encontrado → RETRY")
+            return "RETRY", None
+        
+        try:
+            auth_int = int(auth)
+        except (ValueError, TypeError):
+            print("⚠️ 'auth' no es numérico → RETRY")
+            return "RETRY", None
+        
+        # auth = 0 → FAIL (credenciales incorrectas)
+        if auth_int == 0:
+            print("❌ auth=0 → FAIL (credenciales incorrectas)")
+            return "FAIL", None
+        
+        # auth = 1 → verificar status
+        if auth_int == 1:
+            status = user_info.get('status', '')
+            
+            # status = "Active" → HIT (cuenta válida)
+            if status == "Active":
+                print("✅ auth=1, status=Active → HIT")
+                return "HIT", {
+                    'user_info': user_info,
+                    'server_info': data.get('server_info', {}),
+                    'is_xui': bool(data.get('server_info', {}).get('xui', False))
+                }
+            else:
+                # auth=1 pero status no es Active → Custom (cuenta existe pero no activa)
+                print(f"⚠️ auth=1 pero status='{status}' → CUSTOM")
+                return "CUSTOM", {
+                    'user_info': user_info,
+                    'server_info': data.get('server_info', {}),
+                    'is_xui': bool(data.get('server_info', {}).get('xui', False))
+                }
+        
+        # Cualquier otro valor de auth → RETRY
+        print(f"⚠️ auth={auth_int} no reconocido → RETRY")
+        return "RETRY", None
+        
     except requests.exceptions.Timeout:
-        print("⏱️ Timeout")
-        return None
+        print("⏱️ Timeout → RETRY")
+        return "RETRY", None
+    except requests.exceptions.ConnectionError:
+        print("🔌 Error de conexión → RETRY")
+        return "RETRY", None
     except Exception as e:
-        print(f"❌ Error: {e}")
-        return None
-
-# ============================================================
-# OBTENER CONTENIDO
-# ============================================================
+        print(f"❌ Error inesperado: {e} → RETRY")
+        return "RETRY", None
 
 def get_content_counts(portal: str, user: str, pwd: str):
     """Obtiene conteos de canales, películas y series"""
@@ -125,7 +174,7 @@ def get_content_counts(portal: str, user: str, pwd: str):
     
     try:
         url = f"http://{portal}/player_api.php?username={user}&password={pwd}&action=get_live_streams"
-        r = requests.get(url, timeout=20, verify=False, headers=headers)
+        r = requests.get(url, timeout=15, verify=False, headers=headers)
         if r.status_code == 200:
             data = r.json()
             live = str(len(data)) if isinstance(data, list) else "0"
@@ -134,7 +183,7 @@ def get_content_counts(portal: str, user: str, pwd: str):
     
     try:
         url = f"http://{portal}/player_api.php?username={user}&password={pwd}&action=get_vod_streams"
-        r = requests.get(url, timeout=20, verify=False, headers=headers)
+        r = requests.get(url, timeout=15, verify=False, headers=headers)
         if r.status_code == 200:
             data = r.json()
             vod = str(len(data)) if isinstance(data, list) else "0"
@@ -143,7 +192,7 @@ def get_content_counts(portal: str, user: str, pwd: str):
     
     try:
         url = f"http://{portal}/player_api.php?username={user}&password={pwd}&action=get_series"
-        r = requests.get(url, timeout=20, verify=False, headers=headers)
+        r = requests.get(url, timeout=15, verify=False, headers=headers)
         if r.status_code == 200:
             data = r.json()
             series = str(len(data)) if isinstance(data, list) else "0"
@@ -161,7 +210,7 @@ def get_categories(portal: str, user: str, pwd: str, limit: int = 12):
     
     try:
         url = f"http://{portal}/player_api.php?username={user}&password={pwd}&action=get_live_categories"
-        r = requests.get(url, timeout=20, verify=False, headers=headers)
+        r = requests.get(url, timeout=15, verify=False, headers=headers)
         if r.status_code == 200:
             cats = r.json()
             if isinstance(cats, list):
@@ -188,8 +237,7 @@ def get_server_location(portal: str):
                 country = data.get('country', 'Desconocido')
                 code = data.get('countryCode', '')
                 flags = {'US': '🇺🇸', 'MX': '🇲🇽', 'ES': '🇪🇸', 'AR': '🇦🇷', 
-                         'CO': '🇨🇴', 'CL': '🇨🇱', 'PE': '🇵🇪', 'VE': '🇻🇪',
-                         'UY': '🇺🇾', 'PY': '🇵🇾', 'BO': '🇧🇴', 'EC': '🇪🇨'}
+                         'CO': '🇨🇴', 'CL': '🇨🇱', 'PE': '🇵🇪', 'VE': '🇻🇪'}
                 return f"{country} {flags.get(code, '🌍')}"
     except:
         pass
@@ -199,11 +247,10 @@ def get_server_location(portal: str):
 # FORMATEO DE TARJETAS
 # ============================================================
 
-def format_supreme_card(portal: str, user: str, pwd: str, result: dict, live: str, vod: str, series: str) -> str:
-    """Formatea la tarjeta de información"""
+def format_hit_card(portal: str, user: str, pwd: str, result: dict, live: str, vod: str, series: str) -> str:
+    """Tarjeta para cuentas HIT (válidas)"""
     ui = result.get('user_info', {})
     
-    # Fecha de expiración
     expire = ui.get('exp_date', 'No expira')
     expire_str = "No expira"
     if expire and str(expire).isdigit() and int(expire) > 0:
@@ -212,7 +259,6 @@ def format_supreme_card(portal: str, user: str, pwd: str, result: dict, live: st
         except:
             expire_str = str(expire)
     
-    # Fecha de creación
     created = ui.get('created_at', None)
     created_str = "No disponible"
     if created and str(created).isdigit() and int(created) > 0:
@@ -221,26 +267,21 @@ def format_supreme_card(portal: str, user: str, pwd: str, result: dict, live: st
         except:
             created_str = str(created)
     
-    # Conexiones
     active = ui.get('active_cons', '0')
     max_con = ui.get('max_connections', '0')
     status = ui.get('status', 'Active')
     is_trial = "Trial" if "trial" in user.lower() else "No Trial"
     location = get_server_location(portal)
     
-    # Enlaces
     m3u_link = f"http://{portal}/get.php?username={user}&password={pwd}&type=m3u_plus"
     epg_link = f"http://{portal}/xmltv.php?username={user}&password={pwd}"
-    
-    # Categorías
     categories = get_categories(portal, user, pwd)
     
-    # Construcción
     card = f"""
 {S}
 🦂 𝐈𝐍𝐅𝐎𝐑𝐌𝐀𝐂𝐈Ó𝐍 𝐃𝐄 𝐋𝐀 𝐂𝐔𝐄𝐍𝐓𝐀 🦂
 {S}
-✅ 𝐂𝐔𝐄𝐍𝐓𝐀: 🟢 𝐕Á𝐋𝐈𝐃𝐀
+✅ 𝐂𝐔𝐄𝐍𝐓𝐀: 🟢 𝐇𝐈𝐓 (𝐕Á𝐋𝐈𝐃𝐀)
 📺 𝐏𝐨𝐫𝐭𝐚𝐥: {portal}
 👤 𝐔𝐬𝐮𝐚𝐫𝐢𝐨: {user}
 🔑 𝐂𝐨𝐧𝐭𝐫𝐚𝐬𝐞ñ𝐚: {pwd}
@@ -276,20 +317,36 @@ def format_supreme_card(portal: str, user: str, pwd: str, result: dict, live: st
 """
     return card
 
-def format_invalid_card(portal: str, user: str) -> str:
-    """Tarjeta para cuenta inválida"""
+def format_fail_card(portal: str, user: str) -> str:
+    """Tarjeta para cuentas FAIL"""
     return f"""
 {S}
 🦂 𝐈𝐍𝐅𝐎𝐑𝐌𝐀𝐂𝐈Ó𝐍 𝐃𝐄 𝐋𝐀 𝐂𝐔𝐄𝐍𝐓𝐀 🦂
 {S}
-❌ 𝐂𝐔𝐄𝐍𝐓𝐀: 🔴 𝐈𝐍𝐕Á𝐋𝐈𝐃𝐀
+❌ 𝐂𝐔𝐄𝐍𝐓𝐀: 🔴 𝐅𝐀𝐈𝐋 (𝐈𝐍𝐕Á𝐋𝐈𝐃𝐀)
 📺 𝐏𝐨𝐫𝐭𝐚𝐥: {portal}
 👤 𝐔𝐬𝐮𝐚𝐫𝐢𝐨: {user}
 {S}
-⚠️ 𝐏𝐨𝐬𝐢𝐛𝐥𝐞𝐬 𝐜𝐚𝐮𝐬𝐚𝐬:
-⚠️ • Credenciales incorrectas
-⚠️ • Servidor caído o lento
-⚠️ • Servidor protegido (Cloudflare)
+⚠️ 𝐂𝐫𝐞𝐝𝐞𝐧𝐜𝐢𝐚𝐥𝐞𝐬 𝐢𝐧𝐜𝐨𝐫𝐫𝐞𝐜𝐭𝐚𝐬
+{S}
+👑 𝐕𝐞𝐫𝐢𝐟𝐢𝐜𝐚𝐝𝐨 𝐩𝐨𝐫 𝐋𝐔𝐈𝐒 𝐑 👑
+📅 {datetime.now().strftime('%d/%m/%Y - %H:%M:%S')}
+{S}
+"""
+
+def format_retry_card(portal: str, user: str) -> str:
+    """Tarjeta para cuentas RETRY"""
+    return f"""
+{S}
+🦂 𝐈𝐍𝐅𝐎𝐑𝐌𝐀𝐂𝐈Ó𝐍 𝐃𝐄 𝐋𝐀 𝐂𝐔𝐄𝐍𝐓𝐀 🦂
+{S}
+🔄 𝐂𝐔𝐄𝐍𝐓𝐀: 🟡 𝐑𝐄𝐓𝐑𝐘
+📺 𝐏𝐨𝐫𝐭𝐚𝐥: {portal}
+👤 𝐔𝐬𝐮𝐚𝐫𝐢𝐨: {user}
+{S}
+⚠️ 𝐄𝐥 𝐬𝐞𝐫𝐯𝐢𝐝𝐨𝐫 𝐧𝐨 𝐫𝐞𝐬𝐩𝐨𝐧𝐝𝐢ó
+⚠️ 𝐏𝐨𝐬𝐢𝐛𝐥𝐞 𝐩𝐫𝐨𝐭𝐞𝐜𝐜𝐢ó𝐧 𝐂𝐥𝐨𝐮𝐝𝐟𝐥𝐚𝐫𝐞
+⚠️ 𝐑𝐞𝐢𝐧𝐭𝐞𝐧𝐭𝐚 𝐦á𝐬 𝐭𝐚𝐫𝐝𝐞
 {S}
 👑 𝐕𝐞𝐫𝐢𝐟𝐢𝐜𝐚𝐝𝐨 𝐩𝐨𝐫 𝐋𝐔𝐈𝐒 𝐑 👑
 📅 {datetime.now().strftime('%d/%m/%Y - %H:%M:%S')}
@@ -297,19 +354,17 @@ def format_invalid_card(portal: str, user: str) -> str:
 """
 
 # ============================================================
-# KEEP-ALIVE PARA RENDER
+# KEEP-ALIVE
 # ============================================================
 
 def keep_alive_loop():
-    """Mantiene el bot vivo en Render Free Tier"""
     if RENDER_URL:
         while True:
             try:
                 requests.get(RENDER_URL, timeout=5)
-                print("💓 Keep-alive ping enviado")
             except:
                 pass
-            time.sleep(600)  # 10 minutos
+            time.sleep(600)
 
 # ============================================================
 # COMANDOS DE TELEGRAM
@@ -327,13 +382,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     STATS["users"].add(update.effective_user.id)
     
     await update.message.reply_text(
-        f"🦂 *ＢＯＴ ＩＰＴＶ ＵＬＴＲＡ* 🦂\n\n"
+        f"🦂 *ＢＯＴ ＩＰＴＶ ＵＬＴＩＭＡ ＧＥＮＥＲＡＣＩÓＮ* 🦂\n\n"
         f"🟢 Bot *ACTIVADO*\n"
-        f"🔥 Modo *SUPREMO*\n\n"
-        f"📺 *Envía una URL completa:*\n"
+        f"✅ Lógica HIT/FAIL/RETRY implementada\n\n"
+        f"📺 *Envía una URL:*\n"
         f"`http://portal:8080/get.php?username=user&password=pass`\n\n"
-        f"📝 *O usa el comando:*\n"
-        f"`/check portal:8080 usuario pass`\n\n"
         f"🦂 BY LUIS R",
         parse_mode=ParseMode.MARKDOWN
     )
@@ -344,10 +397,7 @@ async def stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     global bot_active
     bot_active = False
-    await update.message.reply_text(
-        f"🔴 *Bot APAGADO*\n\nUsa /start para encenderlo\n🦂 BY LUIS R",
-        parse_mode=ParseMode.MARKDOWN
-    )
+    await update.message.reply_text(f"🔴 *Bot APAGADO*\n🦂 BY LUIS R", parse_mode=ParseMode.MARKDOWN)
 
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update):
@@ -363,8 +413,10 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🦂 *ＥＳＴＡＤＯ* 🦂\n\n"
         f"📺 Estado: {estado}\n"
         f"⏰ Activo: {hours:02d}h {mins:02d}m {secs:02d}s\n"
-        f"⭐ Checks: {STATS['checks']}\n"
         f"✅ Hits: {STATS['hits']}\n"
+        f"❌ Fails: {STATS['fails']}\n"
+        f"🔄 Retries: {STATS['retries']}\n"
+        f"⭐ Checks: {STATS['checks']}\n"
         f"👥 Usuarios: {len(STATS['users'])}\n\n"
         f"🦂 BY LUIS R",
         parse_mode=ParseMode.MARKDOWN
@@ -379,9 +431,7 @@ async def check_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(args) < 3:
         await update.message.reply_text(
             f"📺 *Uso:* `/check portal:puerto usuario pass`\n"
-            f"🔥 *Ejemplo:* `/check latinchannel.tv:8080 laurca cal130325`\n\n"
-            f"📎 *O envía la URL completa:*\n"
-            f"`http://latinchannel.tv:8080/get.php?username=laurca&password=cal130325&type=m3u_plus`",
+            f"🔥 *Ejemplo:* `/check latinchannel.tv:8080 usuario pass`",
             parse_mode=ParseMode.MARKDOWN
         )
         return
@@ -390,16 +440,21 @@ async def check_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text(f"🦂 *Verificando cuenta...* 🦂", parse_mode=ParseMode.MARKDOWN)
     
     STATS["checks"] += 1
-    result = verify_account(portal, user, pwd)
+    status, result = verify_account_smart(portal, user, pwd)
     
-    if result:
+    if status == "HIT":
         STATS["hits"] += 1
-        await msg.edit_text(f"📡 *Obteniendo contenido del servidor...*", parse_mode=ParseMode.MARKDOWN)
+        await msg.edit_text(f"📡 *Obteniendo contenido...*", parse_mode=ParseMode.MARKDOWN)
         live, vod, series = get_content_counts(portal, user, pwd)
-        card = format_supreme_card(portal, user, pwd, result, live, vod, series)
+        card = format_hit_card(portal, user, pwd, result, live, vod, series)
         await msg.edit_text(card, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
-    else:
-        card = format_invalid_card(portal, user)
+    elif status == "FAIL":
+        STATS["fails"] += 1
+        card = format_fail_card(portal, user)
+        await msg.edit_text(card, parse_mode=ParseMode.MARKDOWN)
+    else:  # RETRY
+        STATS["retries"] += 1
+        card = format_retry_card(portal, user)
         await msg.edit_text(card, parse_mode=ParseMode.MARKDOWN)
 
 async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -412,15 +467,6 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if portal and user and pwd:
         context.args = [portal, user, pwd]
         await check_command(update, context)
-    else:
-        await update.message.reply_text(
-            f"🦂 *BY LUIS R* 🦂\n\n"
-            f"📺 *Formato correcto:*\n"
-            f"`http://portal:8080/get.php?username=user&password=pass`\n\n"
-            f"📝 *Ejemplo:*\n"
-            f"`http://latinchannel.tv:8080/get.php?username=laurca&password=cal130325&type=m3u_plus`",
-            parse_mode=ParseMode.MARKDOWN
-        )
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
@@ -430,9 +476,6 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"⭐ /status - Estado del bot\n"
         f"✅ /check - Verificar cuenta\n"
         f"🦂 /help - Esta ayuda\n\n"
-        f"🔥 *EJEMPLOS:*\n"
-        f"`/check latinchannel.tv:8080 laurca cal130325`\n"
-        f"`http://latinchannel.tv:8080/get.php?username=laurca&password=cal130325&type=m3u_plus`\n\n"
         f"🦂 BY LUIS R",
         parse_mode=ParseMode.MARKDOWN
     )
@@ -444,39 +487,26 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     if not BOT_TOKEN:
         print("❌ ERROR: BOT_TOKEN no configurado")
-        print("   Agrega BOT_TOKEN en Variables de entorno en Railway")
         return
     
-    # Iniciar keep-alive
     if RENDER_URL:
-        t = threading.Thread(target=keep_alive_loop, daemon=True)
-        t.start()
-        print("💓 Keep-alive activado")
+        threading.Thread(target=keep_alive_loop, daemon=True).start()
     
     print("🦂" * 20)
-    print("IPTV BOT ULTRA FUNCIONAL - BY LUIS R")
+    print("IPTV BOT ULTIMA GENERACION - BY LUIS R")
+    print("CON LÓGICA HIT/FAIL/RETRY")
     print("🦂" * 20)
-    print(f"📺 Bot Token: {BOT_TOKEN[:10]}...")
-    print(f"👑 Admin ID: {ADMIN_ID}")
-    print(f"🔗 Render URL: {RENDER_URL or 'No configurada'}")
     
-    # Crear aplicación
     app = Application.builder().token(BOT_TOKEN).build()
     
-    # Registrar comandos
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("stop", stop))
     app.add_handler(CommandHandler("status", status_command))
     app.add_handler(CommandHandler("check", check_command))
     app.add_handler(CommandHandler("help", help_command))
-    
-    # Manejar URLs
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_url))
     
-    print("✅ Bot iniciado correctamente - Esperando mensajes...")
-    print("🦂 BY LUIS R")
-    
-    # Iniciar polling
+    print("✅ Bot iniciado correctamente")
     app.run_polling()
 
 if __name__ == "__main__":
