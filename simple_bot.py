@@ -4,28 +4,26 @@
 ╔══════════════════════════════════════════════════════════════╗
 ║        🦂 IPTV BOT ULTRA INSTINTO — BY LUIS R 🦂            ║
 ║          Telegram Bot 24/7 — Render/GitHub Ready             ║
-║              Integrado con JChecker v5.7                     ║
+║         Acepta URLs M3U completas + combos + comandos        ║
 ╚══════════════════════════════════════════════════════════════╝
 """
 
 import os
 import sys
+import re
 import json
 import logging
 import threading
-import subprocess
 import time
-import signal
-from datetime import datetime, timedelta
-from pathlib import Path
+from datetime import datetime
+from urllib.parse import urlparse, parse_qs
 
 # ──────────────────────────────────────────────
 #  DEPENDENCIAS
 # ──────────────────────────────────────────────
 try:
     from telegram import (
-        Update, InlineKeyboardButton, InlineKeyboardMarkup,
-        BotCommand
+        Update, InlineKeyboardButton, InlineKeyboardMarkup
     )
     from telegram.ext import (
         Application, CommandHandler, CallbackQueryHandler,
@@ -38,50 +36,241 @@ except ImportError:
 
 try:
     import requests
+    requests.packages.urllib3.disable_warnings()
 except ImportError:
     print("❌ Instala: pip install requests")
     sys.exit(1)
 
 # ──────────────────────────────────────────────
-#  CONFIGURACIÓN — EDITA ESTOS VALORES
+#  CONFIGURACIÓN
 # ──────────────────────────────────────────────
-BOT_TOKEN   = os.getenv("BOT_TOKEN", "TU_TOKEN_AQUI")
-ADMIN_ID    = int(os.getenv("ADMIN_ID", "0"))        # Tu Telegram user ID
-ADMIN_USER  = os.getenv("ADMIN_USERNAME", "luisr")   # Sin @
-PORT        = int(os.getenv("PORT", 10000))
-
-# Render keep-alive URL (pon tu URL de Render aquí)
-RENDER_URL  = os.getenv("RENDER_URL", "")
+BOT_TOKEN  = os.getenv("BOT_TOKEN",  "TU_TOKEN_AQUI")
+ADMIN_ID   = int(os.getenv("ADMIN_ID", "0"))
+ADMIN_USER = os.getenv("ADMIN_USERNAME", "luisr")
+RENDER_URL = os.getenv("RENDER_URL", "")
 
 # ──────────────────────────────────────────────
-#  ESTADO GLOBAL DEL BOT
+#  ESTADO GLOBAL
 # ──────────────────────────────────────────────
 BOT_START_TIME = datetime.now()
 bot_state = {
-    "running":        True,
-    "jchecker_proc":  None,   # subprocess de jchecker si lo lanzamos
-    "checks_done":    0,
-    "hits_total":     0,
-    "users":          set(),
+    "running":     True,
+    "checks_done": 0,
+    "hits_total":  0,
+    "users":       set(),
 }
 
 # ──────────────────────────────────────────────
 #  LOGGING
 # ──────────────────────────────────────────────
 logging.basicConfig(
-    format="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
+    format="%(asctime)s [%(levelname)s] %(message)s",
     level=logging.INFO,
     handlers=[
         logging.StreamHandler(sys.stdout),
         logging.FileHandler("bot.log", encoding="utf-8"),
     ]
 )
-logger = logging.getLogger("🦂LuisRBot")
+logger = logging.getLogger("LuisRBot")
 
-# ──────────────────────────────────────────────
+SEP = "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+# ═══════════════════════════════════════════════
+#  PARSER — reconoce cualquier formato de entrada
+# ═══════════════════════════════════════════════
+
+def parse_m3u_url(text: str):
+    """
+    Extrae (portal_con_puerto, usuario, password) desde:
+      1. URL M3U completa:  http://portal:port/get.php?username=X&password=Y
+      2. URL player_api:    http://portal:port/player_api.php?username=X&password=Y
+      3. Combo pipe:        portal:port|user|pass
+      4. Tres tokens:       portal:port user pass
+    Retorna una tupla o None.
+    """
+    text = text.strip()
+
+    # Formato 1 y 2: URL con http/https
+    if text.startswith("http://") or text.startswith("https://"):
+        try:
+            parsed = urlparse(text)
+            host   = parsed.hostname or ""
+            port   = parsed.port
+            portal = f"{host}:{port}" if port else host
+            qs     = parse_qs(parsed.query)
+            user   = qs.get("username", [None])[0]
+            pwd    = qs.get("password",  [None])[0]
+            if portal and user and pwd:
+                return portal, user, pwd
+        except Exception:
+            pass
+
+    # Formato 3: pipe
+    if "|" in text:
+        parts = [p.strip() for p in text.split("|")]
+        if len(parts) >= 3 and "." in parts[0]:
+            return parts[0], parts[1], parts[2]
+
+    # Formato 4: espacios
+    parts = text.split()
+    if len(parts) == 3 and "." in parts[0]:
+        return parts[0], parts[1], parts[2]
+
+    return None
+
+
+# ═══════════════════════════════════════════════
+#  VERIFICADOR IPTV
+# ═══════════════════════════════════════════════
+
+def check_iptv(portal: str, user: str, pwd: str, timeout: int = 12):
+    """Consulta la API del servidor. Devuelve dict con info o dict con 'error'."""
+    base = portal if portal.startswith("http") else f"http://{portal}"
+    api  = f"{base}/player_api.php?username={user}&password={pwd}"
+
+    try:
+        resp = requests.get(api, timeout=timeout, verify=False)
+        resp.raise_for_status()
+        data = resp.json()
+    except requests.exceptions.Timeout:
+        return {"error": "timeout"}
+    except requests.exceptions.ConnectionError:
+        return {"error": "connection"}
+    except Exception as e:
+        return {"error": str(e)}
+
+    ui = data.get("user_info", {})
+    si = data.get("server_info", {})
+
+    exp_ts = ui.get("exp_date")
+    try:
+        exp_str = datetime.fromtimestamp(int(exp_ts)).strftime("%d/%m/%Y %H:%M") if exp_ts else "Sin fecha"
+    except Exception:
+        exp_str = str(exp_ts) if exp_ts else "Sin fecha"
+
+    # Categorías en vivo
+    cats_live = []
+    try:
+        r = requests.get(f"{base}/player_api.php?username={user}&password={pwd}&action=get_live_categories",
+                         timeout=10, verify=False)
+        raw = r.json()
+        if isinstance(raw, list):
+            cats_live = [f"• {c.get('category_name','?')}" for c in raw]
+    except Exception:
+        pass
+
+    # VOD
+    vod_count = 0
+    try:
+        r = requests.get(f"{base}/player_api.php?username={user}&password={pwd}&action=get_vod_categories",
+                         timeout=10, verify=False)
+        raw = r.json()
+        if isinstance(raw, list):
+            vod_count = len(raw)
+    except Exception:
+        pass
+
+    # Series
+    ser_count = 0
+    try:
+        r = requests.get(f"{base}/player_api.php?username={user}&password={pwd}&action=get_series_categories",
+                         timeout=10, verify=False)
+        raw = r.json()
+        if isinstance(raw, list):
+            ser_count = len(raw)
+    except Exception:
+        pass
+
+    portal_clean = portal.replace("http://", "").replace("https://", "")
+    active = str(ui.get("active_cons", "?"))
+    max_c  = str(ui.get("max_connections", "?"))
+
+    return {
+        "ok":       True,
+        "status":   ui.get("status", "unknown"),
+        "portal":   portal_clean,
+        "user":     user,
+        "pwd":      pwd,
+        "exp":      exp_str,
+        "trial":    "Sí" if str(ui.get("is_trial","0")) == "1" else "No Trial",
+        "conns":    f"{active} / {max_c}",
+        "country":  si.get("country", "N/A"),
+        "timezone": si.get("timezone", "N/A"),
+        "live_cats":cats_live,
+        "live_n":   str(len(cats_live)),
+        "vod_n":    str(vod_count),
+        "series_n": str(ser_count),
+    }
+
+
+# ═══════════════════════════════════════════════
+#  TARJETA DE INFO ULTRA PRO
+# ═══════════════════════════════════════════════
+
+def build_card(info: dict, tg_user: str) -> str:
+    portal = info["portal"]
+    user   = info["user"]
+    pwd    = info["pwd"]
+    status = info["status"]
+
+    if status.lower() in ("active", "activa"):
+        st_icon = "🟢"
+        st_txt  = "✅ ACTIVA"
+    else:
+        st_icon = "🔴"
+        st_txt  = "❌ INACTIVA"
+
+    m3u = f"http://{portal}/get.php?username={user}&password={pwd}&type=m3u_plus"
+    epg = f"http://{portal}/xmltv.php?username={user}&password={pwd}"
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    cats_list = info.get("live_cats", [])
+    if cats_list:
+        shown    = cats_list[:15]
+        cats_txt = "\n".join(f"  ➠ {c}" for c in shown)
+        if len(cats_list) > 15:
+            cats_txt += f"\n  ➕ ...y {len(cats_list)-15} categorías más"
+    else:
+        cats_txt = "  ➠ Sin datos de categorías"
+
+    return (
+        f"{SEP}\n"
+        f"     ★彡`ᴀᴄᴄᴏᴜɴᴛ ɪɴꜰᴏ`彡★\n"
+        f"     🦂 *BY LUIS R* 🦂\n"
+        f"{SEP}\n"
+        f"➥ {st_icon} CUENTA VÁLIDA\n"
+        f"➥🆙 Estado: {st_txt}\n"
+        f"➥🧪 Trial: `{info['trial']}`\n"
+        f"➥🌐 Portal: `{portal}`\n"
+        f"➥👤 Usuario: `{user}`\n"
+        f"➥🔑 Contraseña: `{pwd}`\n"
+        f"➥⏲ Vence: `{info['exp']}`\n"
+        f"➥👁 Conexiones: `{info['conns']}`\n"
+        f"➥📍 País: `{info['country']}`\n"
+        f"➥🕐 Zona horaria: `{info['timezone']}`\n"
+        f"{SEP}\n"
+        f"       ★彡`ᴄᴏɴᴛᴇɴᴛ`彡★\n"
+        f"{SEP}\n"
+        f"➥📺 En Vivo: `{info['live_n']} categorías`\n"
+        f"➥🎥 VOD: `{info['vod_n']} categorías`\n"
+        f"➥📹 Series: `{info['series_n']} categorías`\n"
+        f"{SEP}\n"
+        f"➥🔗 [M3U Link]({m3u})  |  [EPG Link]({epg})\n"
+        f"{SEP}\n"
+        f"    ★彡`ᴄᴀᴛᴇɢᴏʀíᴀs`彡★\n"
+        f"{SEP}\n"
+        f"{cats_txt}\n"
+        f"{SEP}\n"
+        f"   ✔️ Verificado para @{tg_user}\n"
+        f"   🕐 {now_str}\n"
+        f"{SEP}\n"
+        f"🦂 *BY LUIS R* 🦂"
+    )
+
+
+# ═══════════════════════════════════════════════
 #  HELPERS
-# ──────────────────────────────────────────────
-STARS = "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+# ═══════════════════════════════════════════════
 
 def uptime_str() -> str:
     delta = datetime.now() - BOT_START_TIME
@@ -90,567 +279,377 @@ def uptime_str() -> str:
     return f"{h:02d}:{m:02d}:{s:02d}"
 
 def is_admin(update: Update) -> bool:
-    uid = update.effective_user.id
-    return uid == ADMIN_ID
+    return update.effective_user.id == ADMIN_ID
 
 def admin_only(func):
-    """Decorador: solo admin puede usar el comando."""
     async def wrapper(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if not is_admin(update):
-            await update.message.reply_text(
-                "🚫 *Acceso denegado.* Solo el administrador puede usar este comando.",
-                parse_mode=ParseMode.MARKDOWN
-            )
+            await update.message.reply_text("🚫 Solo admin puede usar este comando.")
             return
         return await func(update, ctx)
     wrapper.__name__ = func.__name__
     return wrapper
 
-def build_info_card(
-    portal: str,
-    user: str,
-    password: str,
-    expiry: str,
-    country: str,
-    connections: str,
-    live: str = "?",
-    vod: str = "?",
-    series: str = "?",
-    categories: list = None,
-    created: str = None,
-    trial: str = "No Trial",
-    status: str = "ACTIVA",
-    telegram_user: str = "",
-) -> str:
-    """Genera la tarjeta de información ULTRA PRO en formato Telegram."""
-    now_str = datetime.now().strftime("%d/%m/%Y %H:%M")
-    created_str = created or datetime.now().strftime("%d/%m/%Y")
-    status_icon = "🟢" if status.upper() in ("ACTIVA", "ACTIVE", "VÁLIDA") else "🔴"
+def main_keyboard(user_id: int) -> InlineKeyboardMarkup:
+    kb = [
+        [InlineKeyboardButton("🔍 Cómo verificar", callback_data="cb_how"),
+         InlineKeyboardButton("⚡ Estado",          callback_data="cb_status")],
+        [InlineKeyboardButton("📊 Stats",           callback_data="cb_stats"),
+         InlineKeyboardButton("❓ Ayuda",           callback_data="cb_help")],
+        [InlineKeyboardButton("🦂 BY LUIS R 🦂",    callback_data="cb_brand")],
+    ]
+    if user_id == ADMIN_ID:
+        kb.append([
+            InlineKeyboardButton("🟢 Activar", callback_data="cb_on"),
+            InlineKeyboardButton("🔴 Detener", callback_data="cb_off"),
+        ])
+        kb.append([InlineKeyboardButton("🛠 Panel Admin", callback_data="cb_admin")])
+    return InlineKeyboardMarkup(kb)
 
-    m3u = f"https://{portal}/get.php?username={user}&password={password}&type=m3u_plus"
-    epg = f"https://{portal}/xmltv.php?username={user}&password={password}"
 
-    cats_text = ""
-    if categories:
-        for c in categories[:12]:
-            cats_text += f"  ➠ {c}\n"
-        if len(categories) > 12:
-            cats_text += f"  ➕ ...y {len(categories)-12} categorías más\n"
-    else:
-        cats_text = "  ➠ Sin datos de categorías\n"
+# ═══════════════════════════════════════════════
+#  PROCESADOR CENTRAL DE VERIFICACIÓN
+# ═══════════════════════════════════════════════
 
-    card = (
-        f"{STARS}\n"
-        f"     🦂`ɪɴꜰᴏ ᴅᴇ ʟᴀ ᴄᴜᴇɴᴛᴀ` 🦂BY LUIS R🦂\n"
-        f"{STARS}\n"
-        f"➥ {status_icon} CUENTA *{status.upper()}*\n"
-        f"➥🆙 Estado: ✅ *{status.upper()}*\n"
-        f"➥🧪 Trial: `{trial}`\n"
-        f"➥🌐 Portal: `{portal}`\n"
-        f"➥👤 Usuario: `{user}`\n"
-        f"➥🔑 Contraseña: `{password}`\n"
-        f"➥📅 Creada: `{created_str}`\n"
-        f"➥⏲ Vence: `{expiry}`\n"
-        f"➥👁 Conexiones: `{connections}`\n"
-        f"➥📍 País: `{country}`\n"
-        f"{STARS}\n"
-        f"       🦂`ᴄᴏɴᴛᴇɴɪᴅᴏ`🦂\n"
-        f"{STARS}\n"
-        f"➥📺 En Vivo: `{live}`\n"
-        f"➥🎥 VOD: `{vod}`\n"
-        f"➥📹 Series: `{series}`\n"
-        f"{STARS}\n"
-        f"➥🔗 [M3U]({m3u})   |   [EPG]({epg})\n"
-        f"{STARS}\n"
-        f"    🦂`ᴄᴀᴛᴇɢᴏʀíᴀs`🦂\n"
-        f"{STARS}\n"
-        f"{cats_text}"
-        f"{STARS}\n"
-        f"   ✔️ Verificado para @{telegram_user}\n"
-        f"   🕐 {now_str}\n"
-        f"{STARS}\n"
-        f"🦂 *BY LUIS R* 🦂"
+async def do_check(update: Update, portal: str, user: str, pwd: str):
+    tg_user = update.effective_user.username or update.effective_user.first_name or "usuario"
+    msg = await update.message.reply_text(
+        "⏳ *Verificando cuenta...*\n`Consultando servidor IPTV...`",
+        parse_mode=ParseMode.MARKDOWN
     )
-    return card
+    info = check_iptv(portal, user, pwd)
+    bot_state["checks_done"] += 1
+    if info.get("ok") and info.get("status","").lower() in ("active","activa"):
+        bot_state["hits_total"] += 1
 
-# ──────────────────────────────────────────────
-#  KEEP-ALIVE (para Render free tier)
-# ──────────────────────────────────────────────
-def keep_alive_loop():
-    """Hace ping cada 14 min para que Render no duerma el servicio."""
-    if not RENDER_URL:
+    if "error" in info:
+        err = info["error"]
+        if err == "timeout":
+            txt = (
+                f"⏱ *Timeout — Sin respuesta*\n{SEP}\n"
+                f"El servidor `{portal}` no respondió.\n\n"
+                f"*Posibles causas:*\n"
+                f"• Servidor caído o lento\n"
+                f"• Puerto incorrecto\n"
+                f"• Credenciales inválidas\n"
+                f"• Servidor protegido (Cloudflare)\n"
+                f"{SEP}\n🦂 *BY LUIS R* 🦂"
+            )
+        elif err == "connection":
+            txt = (
+                f"❌ *Sin conexión*\n{SEP}\n"
+                f"No se pudo conectar a `{portal}`.\n"
+                f"Verifica portal y puerto.\n"
+                f"{SEP}\n🦂 *BY LUIS R* 🦂"
+            )
+        else:
+            txt = f"❌ *Error:*\n`{err}`\n\n🦂 *BY LUIS R* 🦂"
+        await msg.edit_text(txt, parse_mode=ParseMode.MARKDOWN)
         return
-    logger.info(f"Keep-alive activado → {RENDER_URL}")
-    while True:
-        try:
-            r = requests.get(RENDER_URL, timeout=10)
-            logger.info(f"Keep-alive ping: {r.status_code}")
-        except Exception as e:
-            logger.warning(f"Keep-alive error: {e}")
-        time.sleep(840)   # 14 minutos
 
-# ──────────────────────────────────────────────
-#  COMANDOS PRINCIPALES
-# ──────────────────────────────────────────────
+    card = build_card(info, tg_user)
+    await msg.edit_text(card, parse_mode=ParseMode.MARKDOWN, disable_web_page_preview=True)
+
+
+# ═══════════════════════════════════════════════
+#  COMANDOS
+# ═══════════════════════════════════════════════
 
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     bot_state["users"].add(update.effective_user.id)
-    user = update.effective_user
-    kb = [
-        [InlineKeyboardButton("📋 Info Cuenta",    callback_data="menu_info"),
-         InlineKeyboardButton("🔍 Chequear URL",   callback_data="menu_check")],
-        [InlineKeyboardButton("⚡ Estado del Bot", callback_data="menu_status"),
-         InlineKeyboardButton("📂 Categorías",     callback_data="menu_cats")],
-        [InlineKeyboardButton("🔗 Links M3U/EPG",  callback_data="menu_links"),
-         InlineKeyboardButton("📊 Estadísticas",   callback_data="menu_stats")],
-        [InlineKeyboardButton("🦂 BY LUIS R 🦂",   callback_data="menu_brand")],
-    ]
-    if user.id == ADMIN_ID:
-        kb.append([
-            InlineKeyboardButton("🟢 Iniciar Bot",  callback_data="admin_start"),
-            InlineKeyboardButton("🔴 Detener Bot",  callback_data="admin_stop"),
-        ])
-        kb.append([
-            InlineKeyboardButton("🛠 Panel Admin",  callback_data="admin_panel"),
-        ])
-    markup = InlineKeyboardMarkup(kb)
-    txt = (
-        f"🦂 *BOT IPTV ULTRA INSTINTO* 🦂\n"
-        f"*BY LUIS R*\n"
-        f"{STARS}\n"
-        f"Bienvenido, *{user.first_name}*! 👋\n\n"
-        f"Selecciona una opción del menú:"
+    name = update.effective_user.first_name or "usuario"
+    await update.message.reply_text(
+        f"🦂 *BOT IPTV ULTRA INSTINTO* 🦂\n*BY LUIS R*\n{SEP}\n"
+        f"Bienvenido *{name}*! 👋\n\n"
+        f"Pega directamente una URL M3U,\nun combo, o usa `/check`\n{SEP}",
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=main_keyboard(update.effective_user.id)
     )
-    await update.message.reply_text(txt, parse_mode=ParseMode.MARKDOWN, reply_markup=markup)
-
-
-async def cmd_info(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Muestra tarjeta de info con argumentos: /info portal usuario pass vence pais conex"""
-    args = ctx.args
-    if len(args) < 6:
-        await update.message.reply_text(
-            "📋 *Uso:*\n"
-            "`/info portal usuario contraseña vencimiento país conexiones`\n\n"
-            "*Ejemplo:*\n"
-            "`/info tv.ejemplo.com:8080 miuser mipass 31/12/2026 Mexico 1/3`",
-            parse_mode=ParseMode.MARKDOWN
-        )
-        return
-    portal, user, pwd, expiry, country, conns = args[0], args[1], args[2], args[3], args[4], args[5]
-    tg_user = update.effective_user.username or update.effective_user.first_name
-    card = build_info_card(
-        portal=portal, user=user, password=pwd,
-        expiry=expiry, country=country, connections=conns,
-        telegram_user=tg_user
-    )
-    await update.message.reply_text(card, parse_mode=ParseMode.MARKDOWN, disable_web_page_preview=True)
 
 
 async def cmd_check(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Chequea una URL IPTV: /check portal:port usuario contraseña"""
-    args = ctx.args
-    if len(args) < 3:
+    """Acepta: URL M3U completa, portal user pass, o portal|user|pass"""
+    bot_state["users"].add(update.effective_user.id)
+    if not ctx.args:
         await update.message.reply_text(
-            "🔍 *Uso:*\n`/check portal:port usuario contraseña`\n\n"
-            "*Ejemplo:*\n`/check tv.ejemplo.com:8080 miuser mipass`",
+            "🔍 *Uso:*\n\n"
+            "*URL completa:*\n"
+            "`/check http://portal:port/get.php?username=X&password=Y&type=m3u_plus`\n\n"
+            "*Separado:*\n"
+            "`/check portal:port usuario contraseña`\n\n"
+            "*Pipe:*\n"
+            "`/check portal:port|usuario|contraseña`",
             parse_mode=ParseMode.MARKDOWN
         )
         return
-    portal, user, pwd = args[0], args[1], args[2]
-    msg = await update.message.reply_text("🔄 *Verificando cuenta...*", parse_mode=ParseMode.MARKDOWN)
-
-    try:
-        url = f"http://{portal}/player_api.php?username={user}&password={pwd}"
-        resp = requests.get(url, timeout=10, verify=False)
-        data = resp.json()
-
-        ui = data.get("user_info", {})
-        si = data.get("server_info", {})
-
-        status  = ui.get("status", "unknown")
-        exp_ts  = ui.get("exp_date")
-        conns   = f"{ui.get('active_cons','?')} / {ui.get('max_connections','?')}"
-        trial   = "Sí" if str(ui.get('is_trial','0')) == '1' else "No"
-
-        exp_str = datetime.fromtimestamp(int(exp_ts)).strftime("%d/%m/%Y %H:%M") if exp_ts else "N/A"
-
-        # Contar canales / vod / series
-        try:
-            cat_url = f"http://{portal}/player_api.php?username={user}&password={pwd}&action=get_live_categories"
-            cats_r  = requests.get(cat_url, timeout=8, verify=False).json()
-            live_cats = len(cats_r) if isinstance(cats_r, list) else 0
-        except:
-            live_cats = 0
-
-        try:
-            vod_url = f"http://{portal}/player_api.php?username={user}&password={pwd}&action=get_vod_categories"
-            vod_r   = requests.get(vod_url, timeout=8, verify=False).json()
-            vod_cats = len(vod_r) if isinstance(vod_r, list) else 0
-        except:
-            vod_cats = 0
-
-        try:
-            ser_url = f"http://{portal}/player_api.php?username={user}&password={pwd}&action=get_series_categories"
-            ser_r   = requests.get(ser_url, timeout=8, verify=False).json()
-            ser_cats = len(ser_r) if isinstance(ser_r, list) else 0
-        except:
-            ser_cats = 0
-
-        bot_state["checks_done"] += 1
-        if status == "Active":
-            bot_state["hits_total"] += 1
-
-        tg_user = update.effective_user.username or update.effective_user.first_name
-        card = build_info_card(
-            portal=portal, user=user, password=pwd,
-            expiry=exp_str, country=si.get("country", "N/A"),
-            connections=conns, live=str(live_cats),
-            vod=str(vod_cats), series=str(ser_cats),
-            trial=trial, status=status,
-            telegram_user=tg_user
+    full = " ".join(ctx.args).strip()
+    parsed = parse_m3u_url(full)
+    if not parsed:
+        await update.message.reply_text(
+            "❌ *Formato no reconocido.*\n\n"
+            "Envía la URL así:\n"
+            "`http://portal:port/get.php?username=X&password=Y&type=m3u_plus`",
+            parse_mode=ParseMode.MARKDOWN
         )
-        await msg.edit_text(card, parse_mode=ParseMode.MARKDOWN, disable_web_page_preview=True)
-
-    except requests.exceptions.Timeout:
-        await msg.edit_text("⏱ *Timeout:* El servidor no respondió a tiempo.", parse_mode=ParseMode.MARKDOWN)
-    except Exception as e:
-        await msg.edit_text(f"❌ *Error al verificar:*\n`{str(e)}`", parse_mode=ParseMode.MARKDOWN)
+        return
+    portal, user, pwd = parsed
+    await do_check(update, portal, user, pwd)
 
 
 async def cmd_status(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    running_icon = "🟢" if bot_state["running"] else "🔴"
-    running_txt  = "EN LÍNEA" if bot_state["running"] else "DETENIDO"
-    txt = (
-        f"{STARS}\n"
-        f"⚡ *ESTADO DEL BOT* ⚡\n"
-        f"{STARS}\n"
-        f"➥ {running_icon} Estado: *{running_txt}*\n"
-        f"➥ ⏱ Uptime: `{uptime_str()}`\n"
-        f"➥ 🔍 Checks realizados: `{bot_state['checks_done']}`\n"
-        f"➥ ✅ Hits encontrados: `{bot_state['hits_total']}`\n"
-        f"➥ 👥 Usuarios: `{len(bot_state['users'])}`\n"
-        f"➥ 📅 Inicio: `{BOT_START_TIME.strftime('%d/%m/%Y %H:%M:%S')}`\n"
-        f"{STARS}\n"
-        f"🦂 *BY LUIS R* 🦂"
-    )
-    await update.message.reply_text(txt, parse_mode=ParseMode.MARKDOWN)
-
-
-@admin_only
-async def cmd_stop(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    bot_state["running"] = False
+    icon   = "🟢" if bot_state["running"] else "🔴"
+    estado = "EN LÍNEA" if bot_state["running"] else "DETENIDO"
     await update.message.reply_text(
-        "🔴 *Bot marcado como DETENIDO.*\n"
-        "El proceso sigue activo en Render.\n"
-        "Usa /on para reactivar.",
+        f"{SEP}\n⚡ *ESTADO DEL BOT*\n{SEP}\n"
+        f"➥ {icon} *{estado}*\n"
+        f"➥ ⏱ Uptime: `{uptime_str()}`\n"
+        f"➥ 🔍 Checks: `{bot_state['checks_done']}`\n"
+        f"➥ ✅ Hits: `{bot_state['hits_total']}`\n"
+        f"➥ 👥 Usuarios: `{len(bot_state['users'])}`\n"
+        f"{SEP}\n🦂 *BY LUIS R* 🦂",
         parse_mode=ParseMode.MARKDOWN
     )
-    logger.warning("Bot detenido por admin.")
 
 
 @admin_only
 async def cmd_on(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     bot_state["running"] = True
-    await update.message.reply_text(
-        "🟢 *Bot reactivado y EN LÍNEA.*\n"
-        f"⏱ Uptime: `{uptime_str()}`",
-        parse_mode=ParseMode.MARKDOWN
-    )
-    logger.info("Bot reactivado por admin.")
-
+    await update.message.reply_text("🟢 *Bot ACTIVADO* ✅", parse_mode=ParseMode.MARKDOWN)
 
 @admin_only
-async def cmd_broadcast(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Envía un mensaje a todos los usuarios. /broadcast texto"""
-    if not ctx.args:
-        await update.message.reply_text("Uso: /broadcast <mensaje>")
-        return
-    msg_text = " ".join(ctx.args)
-    count = 0
-    for uid in bot_state["users"]:
-        try:
-            await ctx.bot.send_message(uid, f"📢 *Mensaje de Admin:*\n{msg_text}", parse_mode=ParseMode.MARKDOWN)
-            count += 1
-        except:
-            pass
-    await update.message.reply_text(f"✅ Mensaje enviado a {count} usuario(s).")
-
+async def cmd_stop(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    bot_state["running"] = False
+    await update.message.reply_text("🔴 *Bot DETENIDO*\nUsa /on para reactivar.", parse_mode=ParseMode.MARKDOWN)
 
 @admin_only
 async def cmd_admin(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    kb = [
-        [InlineKeyboardButton("🟢 Activar",      callback_data="admin_start"),
-         InlineKeyboardButton("🔴 Detener",      callback_data="admin_stop")],
-        [InlineKeyboardButton("📊 Stats",         callback_data="admin_stats"),
-         InlineKeyboardButton("🧹 Limpiar logs",  callback_data="admin_clearlogs")],
-        [InlineKeyboardButton("📢 Broadcast",     callback_data="admin_broadcast"),
-         InlineKeyboardButton("⚙️ Config",         callback_data="admin_config")],
-        [InlineKeyboardButton("🔙 Menú",          callback_data="back_main")],
-    ]
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🟢 Activar", callback_data="cb_on"),
+         InlineKeyboardButton("🔴 Detener", callback_data="cb_off")],
+        [InlineKeyboardButton("📊 Stats",   callback_data="cb_stats")],
+        [InlineKeyboardButton("🔙 Menú",    callback_data="cb_back")],
+    ])
     await update.message.reply_text(
-        f"🛠 *PANEL ADMINISTRADOR*\n{STARS}\n"
-        f"🦂 Admin: @{ADMIN_USER}\n"
+        f"🛠 *PANEL ADMIN*\n{SEP}\n"
+        f"Admin: @{ADMIN_USER}\n"
         f"⏱ Uptime: `{uptime_str()}`\n"
-        f"👥 Usuarios: `{len(bot_state['users'])}`",
-        parse_mode=ParseMode.MARKDOWN,
-        reply_markup=InlineKeyboardMarkup(kb)
+        f"👥 Usuarios: `{len(bot_state['users'])}`\n"
+        f"🔍 Checks: `{bot_state['checks_done']}`\n"
+        f"✅ Hits: `{bot_state['hits_total']}`",
+        parse_mode=ParseMode.MARKDOWN, reply_markup=kb
     )
 
+@admin_only
+async def cmd_broadcast(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not ctx.args:
+        await update.message.reply_text("Uso: `/broadcast mensaje`", parse_mode=ParseMode.MARKDOWN)
+        return
+    txt  = " ".join(ctx.args)
+    sent = 0
+    for uid in bot_state["users"]:
+        try:
+            await ctx.bot.send_message(uid, f"📢 *Admin:*\n{txt}", parse_mode=ParseMode.MARKDOWN)
+            sent += 1
+        except Exception:
+            pass
+    await update.message.reply_text(f"✅ Enviado a {sent} usuario(s).")
 
 async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    txt = (
-        f"🦂 *COMANDOS DISPONIBLES* 🦂\n"
-        f"{STARS}\n"
+    await update.message.reply_text(
+        f"🦂 *AYUDA — COMANDOS* 🦂\n{SEP}\n"
         f"▸ /start — Menú principal\n"
-        f"▸ /info portal user pass vence pais conex — Tarjeta de info\n"
-        f"▸ /check portal user pass — Verificar cuenta en vivo\n"
+        f"▸ /check `<url o portal user pass>` — Verificar\n"
         f"▸ /status — Estado del bot\n"
         f"▸ /help — Esta ayuda\n"
-        f"{STARS}\n"
-        f"*Solo Admin:*\n"
-        f"▸ /on — Activar bot\n"
-        f"▸ /stop — Detener bot\n"
-        f"▸ /admin — Panel admin\n"
-        f"▸ /broadcast texto — Mensaje masivo\n"
-        f"{STARS}\n"
-        f"🦂 *BY LUIS R* 🦂"
+        f"{SEP}\n*Admin:*\n"
+        f"▸ /on — Activar\n"
+        f"▸ /stop — Detener\n"
+        f"▸ /admin — Panel\n"
+        f"▸ /broadcast `msg` — Mensaje masivo\n"
+        f"{SEP}\n"
+        f"*Pega directamente una URL M3U o combo:*\n"
+        f"`http://portal:port/get.php?username=X&password=Y&type=m3u_plus`\n"
+        f"`portal:port|usuario|contraseña`\n"
+        f"{SEP}\n🦂 *BY LUIS R* 🦂",
+        parse_mode=ParseMode.MARKDOWN
     )
-    await update.message.reply_text(txt, parse_mode=ParseMode.MARKDOWN)
 
 
-# ──────────────────────────────────────────────
-#  CALLBACKS (botones inline)
-# ──────────────────────────────────────────────
+# ═══════════════════════════════════════════════
+#  MENSAJES DE TEXTO (URLs y combos sueltos)
+# ═══════════════════════════════════════════════
 
-async def callback_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
+async def msg_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    bot_state["users"].add(update.effective_user.id)
+    if not bot_state["running"]:
+        await update.message.reply_text("🔴 El bot está pausado. Admin usa /on para reactivar.")
+        return
+    text   = (update.message.text or "").strip()
+    parsed = parse_m3u_url(text)
+    if parsed:
+        portal, user, pwd = parsed
+        await do_check(update, portal, user, pwd)
+        return
+    await update.message.reply_text(
+        "🦂 *BY LUIS R* 🦂\n\nPega una URL M3U directamente o usa /help",
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=main_keyboard(update.effective_user.id)
+    )
+
+
+# ═══════════════════════════════════════════════
+#  CALLBACKS INLINE
+# ═══════════════════════════════════════════════
+
+async def cb_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q    = update.callback_query
     data = q.data
+    uid  = update.effective_user.id
+    await q.answer()
+    back = [[InlineKeyboardButton("🔙 Volver al menú", callback_data="cb_back")]]
 
-    if data == "menu_status":
-        running_icon = "🟢" if bot_state["running"] else "🔴"
-        txt = (
-            f"⚡ *ESTADO DEL BOT*\n{STARS}\n"
-            f"{running_icon} *{'EN LÍNEA' if bot_state['running'] else 'DETENIDO'}*\n"
+    if data == "cb_status":
+        icon   = "🟢" if bot_state["running"] else "🔴"
+        estado = "EN LÍNEA" if bot_state["running"] else "DETENIDO"
+        await q.edit_message_text(
+            f"{SEP}\n⚡ *ESTADO*\n{SEP}\n"
+            f"{icon} *{estado}*\n"
             f"⏱ Uptime: `{uptime_str()}`\n"
             f"🔍 Checks: `{bot_state['checks_done']}`\n"
             f"✅ Hits: `{bot_state['hits_total']}`\n"
             f"👥 Usuarios: `{len(bot_state['users'])}`\n"
-            f"{STARS}\n🦂 BY LUIS R 🦂"
+            f"{SEP}\n🦂 *BY LUIS R* 🦂",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup(back)
         )
-        await q.edit_message_text(txt, parse_mode=ParseMode.MARKDOWN,
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Volver", callback_data="back_main")]]))
-
-    elif data == "menu_info":
+    elif data == "cb_stats":
+        fail = bot_state["checks_done"] - bot_state["hits_total"]
         await q.edit_message_text(
-            "📋 *¿Cómo ver info de una cuenta?*\n\n"
-            "Usa el comando:\n"
-            "`/info portal:puerto usuario contraseña vencimiento país conexiones`\n\n"
-            "Ejemplo:\n"
-            "`/info tv.ejemplo.com:8080 user123 pass456 31/12/2026 México 1/3`",
+            f"{SEP}\n📊 *ESTADÍSTICAS*\n{SEP}\n"
+            f"🔍 Verificadas: `{bot_state['checks_done']}`\n"
+            f"✅ Válidas: `{bot_state['hits_total']}`\n"
+            f"❌ Inválidas: `{fail}`\n"
+            f"👥 Usuarios: `{len(bot_state['users'])}`\n"
+            f"⏱ Uptime: `{uptime_str()}`\n"
+            f"{SEP}\n🦂 *BY LUIS R* 🦂",
             parse_mode=ParseMode.MARKDOWN,
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Volver", callback_data="back_main")]]))
-
-    elif data == "menu_check":
+            reply_markup=InlineKeyboardMarkup(back)
+        )
+    elif data == "cb_help":
         await q.edit_message_text(
-            "🔍 *Verificar cuenta en vivo:*\n\n"
-            "`/check portal:puerto usuario contraseña`\n\n"
-            "El bot consultará el servidor y te mostrará:\n"
-            "✅ Estado, vencimiento, conexiones\n"
-            "📺 Canales en vivo, VOD, Series\n"
-            "🔗 Links M3U y EPG listos para copiar",
+            f"🦂 *AYUDA RÁPIDA*\n{SEP}\n"
+            f"Pega una URL M3U directamente:\n"
+            f"`http://portal:port/get.php?username=X&password=Y&type=m3u_plus`\n\n"
+            f"O combo:\n`portal:port|usuario|contraseña`\n\n"
+            f"O comando:\n`/check portal:port user pass`\n"
+            f"{SEP}\n🦂 *BY LUIS R* 🦂",
             parse_mode=ParseMode.MARKDOWN,
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Volver", callback_data="back_main")]]))
-
-    elif data == "menu_links":
+            reply_markup=InlineKeyboardMarkup(back)
+        )
+    elif data == "cb_how":
         await q.edit_message_text(
-            "🔗 *CÓMO GENERAR TUS LINKS*\n\n"
-            "*M3U Plus:*\n"
-            "`http://PORTAL/get.php?username=USER&password=PASS&type=m3u_plus`\n\n"
-            "*EPG:*\n"
-            "`http://PORTAL/xmltv.php?username=USER&password=PASS`\n\n"
-            "Usa `/check` para generarlos automáticamente 🚀",
+            f"🔍 *CÓMO VERIFICAR*\n{SEP}\n"
+            f"*Método 1 — URL M3U directa:*\n"
+            f"`http://portal:8080/get.php?username=user&password=pass&type=m3u_plus`\n\n"
+            f"*Método 2 — Comando /check:*\n"
+            f"`/check portal:8080 usuario contraseña`\n\n"
+            f"*Método 3 — Combo pipe:*\n"
+            f"`portal:8080|usuario|contraseña`\n"
+            f"{SEP}\n🦂 *BY LUIS R* 🦂",
             parse_mode=ParseMode.MARKDOWN,
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Volver", callback_data="back_main")]]))
-
-    elif data == "menu_stats":
+            reply_markup=InlineKeyboardMarkup(back)
+        )
+    elif data == "cb_brand":
         await q.edit_message_text(
-            f"📊 *ESTADÍSTICAS*\n{STARS}\n"
-            f"🔍 Cuentas verificadas: `{bot_state['checks_done']}`\n"
-            f"✅ Hits encontrados: `{bot_state['hits_total']}`\n"
-            f"❌ Inválidas: `{bot_state['checks_done'] - bot_state['hits_total']}`\n"
-            f"👥 Usuarios totales: `{len(bot_state['users'])}`\n"
-            f"⏱ Tiempo activo: `{uptime_str()}`\n"
-            f"{STARS}\n🦂 BY LUIS R 🦂",
-            parse_mode=ParseMode.MARKDOWN,
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Volver", callback_data="back_main")]]))
-
-    elif data == "menu_cats":
-        cats = [
-            "🎬 CINE [101]", "🌍 MUNDO Y CULTURA [28]",
-            "⚽ LATINO DEPORTES [77]", "🎭 ENTRETENIMIENTO [23]",
-            "🧒 INFANTILES [20]", "🏠 EL GRAN HERMANO [7]",
-            "🎪 EVENTOS ESPECIALES & DISNEY+ [401]", "🏈 NFL [8]",
-            "🎞 CINEMA PREMIUM [15]", "🇺🇾 URUGUAY [41]",
-            "🇲🇽 MÉXICO [45]", "🇨🇱 CHILE [43]",
-            "🇪🇨 ECUADOR [23]", "🇦🇷 ARGENTINA [49]",
-            "🇨🇴 COLOMBIA [21]", "🇵🇪 PERÚ [18]",
-            "🇻🇪 VENEZUELA [22]", "🇺🇸 USA [38]",
-            "🇪🇸 ESPAÑA [31]", "🇩🇴 REP. DOMINICANA [14]",
-        ]
-        cat_text = "\n".join(f"  ➠ {c}" for c in cats)
-        await q.edit_message_text(
-            f"📂 *CATEGORÍAS DISPONIBLES*\n{STARS}\n{cat_text}\n"
-            f"  ➕ ...y más disponibles\n{STARS}\n🦂 BY LUIS R 🦂",
-            parse_mode=ParseMode.MARKDOWN,
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Volver", callback_data="back_main")]]))
-
-    elif data == "menu_brand":
-        await q.edit_message_text(
-            "🦂 *BY LUIS R* 🦂\n\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            "Bot IPTV *ULTRA INSTINTO*\n"
-            "Verificador + Info + 24/7\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"Versión: `2.0 ULTRA PRO`\n"
+            f"🦂 *BY LUIS R* 🦂\n{SEP}\n"
+            f"Bot IPTV *ULTRA INSTINTO*\n"
             f"Motor: `JChecker v5.7`\n"
+            f"Versión: `2.0 ULTRA PRO`\n"
             f"Deploy: `Render + GitHub`\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            f"Uptime: `{uptime_str()}`\n{SEP}",
             parse_mode=ParseMode.MARKDOWN,
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Volver", callback_data="back_main")]]))
-
-    elif data == "admin_start":
-        if not is_admin(update):
-            await q.answer("🚫 Solo admin.", show_alert=True)
-            return
+            reply_markup=InlineKeyboardMarkup(back)
+        )
+    elif data == "cb_on":
+        if uid != ADMIN_ID:
+            await q.answer("🚫 Solo admin.", show_alert=True); return
         bot_state["running"] = True
         await q.answer("🟢 Bot activado!", show_alert=True)
-        logger.info("Bot activado por admin vía inline.")
-
-    elif data == "admin_stop":
-        if not is_admin(update):
-            await q.answer("🚫 Solo admin.", show_alert=True)
-            return
+    elif data == "cb_off":
+        if uid != ADMIN_ID:
+            await q.answer("🚫 Solo admin.", show_alert=True); return
         bot_state["running"] = False
         await q.answer("🔴 Bot detenido.", show_alert=True)
-        logger.warning("Bot detenido por admin vía inline.")
-
-    elif data == "admin_panel":
-        if not is_admin(update):
-            await q.answer("🚫 Solo admin.", show_alert=True)
-            return
-        kb = [
-            [InlineKeyboardButton("🟢 Activar",  callback_data="admin_start"),
-             InlineKeyboardButton("🔴 Detener",  callback_data="admin_stop")],
-            [InlineKeyboardButton("📊 Stats",    callback_data="menu_stats")],
-            [InlineKeyboardButton("🔙 Volver",   callback_data="back_main")],
-        ]
+    elif data == "cb_admin":
+        if uid != ADMIN_ID:
+            await q.answer("🚫 Solo admin.", show_alert=True); return
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🟢 Activar", callback_data="cb_on"),
+             InlineKeyboardButton("🔴 Detener", callback_data="cb_off")],
+            [InlineKeyboardButton("📊 Stats",   callback_data="cb_stats")],
+            [InlineKeyboardButton("🔙 Volver",  callback_data="cb_back")],
+        ])
         await q.edit_message_text(
-            f"🛠 *PANEL ADMIN*\n{STARS}\n"
-            f"🦂 Admin: @{ADMIN_USER}\n"
+            f"🛠 *PANEL ADMIN*\n{SEP}\n"
+            f"Admin: @{ADMIN_USER}\n"
             f"⏱ Uptime: `{uptime_str()}`\n"
-            f"👥 Usuarios: `{len(bot_state['users'])}`\n"
-            f"🔍 Checks: `{bot_state['checks_done']}`\n"
-            f"✅ Hits: `{bot_state['hits_total']}`",
-            parse_mode=ParseMode.MARKDOWN,
-            reply_markup=InlineKeyboardMarkup(kb))
-
-    elif data == "back_main":
-        user  = update.effective_user
-        kb = [
-            [InlineKeyboardButton("📋 Info Cuenta",    callback_data="menu_info"),
-             InlineKeyboardButton("🔍 Chequear URL",   callback_data="menu_check")],
-            [InlineKeyboardButton("⚡ Estado del Bot", callback_data="menu_status"),
-             InlineKeyboardButton("📂 Categorías",     callback_data="menu_cats")],
-            [InlineKeyboardButton("🔗 Links M3U/EPG",  callback_data="menu_links"),
-             InlineKeyboardButton("📊 Estadísticas",   callback_data="menu_stats")],
-            [InlineKeyboardButton("🦂 BY LUIS R 🦂",   callback_data="menu_brand")],
-        ]
-        if user.id == ADMIN_ID:
-            kb.append([
-                InlineKeyboardButton("🟢 Activar Bot",  callback_data="admin_start"),
-                InlineKeyboardButton("🔴 Detener Bot",  callback_data="admin_stop"),
-            ])
-            kb.append([InlineKeyboardButton("🛠 Panel Admin", callback_data="admin_panel")])
+            f"👥 Usuarios: `{len(bot_state['users'])}`",
+            parse_mode=ParseMode.MARKDOWN, reply_markup=kb
+        )
+    elif data == "cb_back":
+        name = update.effective_user.first_name or "usuario"
         await q.edit_message_text(
-            f"🦂 *BOT IPTV ULTRA INSTINTO* 🦂\n*BY LUIS R*\n{STARS}\nSelecciona una opción:",
+            f"🦂 *BOT IPTV ULTRA INSTINTO* 🦂\n*BY LUIS R*\n{SEP}\n"
+            f"Bienvenido *{name}*! 👋\n\nSelecciona una opción:",
             parse_mode=ParseMode.MARKDOWN,
-            reply_markup=InlineKeyboardMarkup(kb))
+            reply_markup=main_keyboard(uid)
+        )
 
 
-# ──────────────────────────────────────────────
-#  MENSAJE GENÉRICO (acepta combos pegados)
-# ──────────────────────────────────────────────
-async def msg_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Detecta si pegan una línea tipo portal|user|pass y la verifica."""
-    if not bot_state["running"]:
+# ═══════════════════════════════════════════════
+#  KEEP-ALIVE (Render free tier)
+# ═══════════════════════════════════════════════
+
+def keep_alive_loop():
+    if not RENDER_URL:
         return
-    text = update.message.text or ""
-    # Detectar formato combo: portal:port|user|pass  o  portal:port user pass
-    parts = None
-    if "|" in text:
-        parts = text.strip().split("|")
-    elif text.count(" ") == 2:
-        parts = text.strip().split()
-
-    if parts and len(parts) == 3:
-        portal, user, pwd = parts[0].strip(), parts[1].strip(), parts[2].strip()
-        if "." in portal and len(user) > 2 and len(pwd) > 2:
-            ctx.args = [portal, user, pwd]
-            await cmd_check(update, ctx)
-            return
-
-    await update.message.reply_text(
-        "🦂 Hola! Usa /help para ver todos los comandos.\n"
-        "También puedes pegar un combo así:\n"
-        "`portal:port|usuario|contraseña`",
-        parse_mode=ParseMode.MARKDOWN
-    )
+    logger.info(f"Keep-alive → {RENDER_URL}")
+    while True:
+        try:
+            r = requests.get(RENDER_URL, timeout=10)
+            logger.info(f"Keep-alive OK: {r.status_code}")
+        except Exception as e:
+            logger.warning(f"Keep-alive error: {e}")
+        time.sleep(840)
 
 
-# ──────────────────────────────────────────────
+# ═══════════════════════════════════════════════
 #  MAIN
-# ──────────────────────────────────────────────
+# ═══════════════════════════════════════════════
 
 def main():
     if BOT_TOKEN == "TU_TOKEN_AQUI":
-        print("❌ ERROR: Configura BOT_TOKEN en las variables de entorno.")
-        print("   Render → Environment → Add Variable → BOT_TOKEN=tu_token")
+        print("❌ Configura BOT_TOKEN como variable de entorno en Render.")
         sys.exit(1)
 
-    # Keep-alive thread
     if RENDER_URL:
-        t = threading.Thread(target=keep_alive_loop, daemon=True)
-        t.start()
+        threading.Thread(target=keep_alive_loop, daemon=True).start()
 
-    # Build app
     app = Application.builder().token(BOT_TOKEN).build()
 
-    # Commands
     app.add_handler(CommandHandler("start",     cmd_start))
-    app.add_handler(CommandHandler("info",      cmd_info))
     app.add_handler(CommandHandler("check",     cmd_check))
     app.add_handler(CommandHandler("status",    cmd_status))
-    app.add_handler(CommandHandler("stop",      cmd_stop))
     app.add_handler(CommandHandler("on",        cmd_on))
+    app.add_handler(CommandHandler("stop",      cmd_stop))
     app.add_handler(CommandHandler("admin",     cmd_admin))
     app.add_handler(CommandHandler("broadcast", cmd_broadcast))
     app.add_handler(CommandHandler("help",      cmd_help))
-
-    # Callbacks
-    app.add_handler(CallbackQueryHandler(callback_handler))
-
-    # Generic messages
+    app.add_handler(CallbackQueryHandler(cb_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, msg_handler))
 
-    logger.info("🦂 Bot ULTRA INSTINTO BY LUIS R iniciado ✅")
-    logger.info(f"   Admin ID : {ADMIN_ID}")
-    logger.info(f"   Render   : {RENDER_URL or 'No configurado'}")
-
-    app.run_polling(
-        allowed_updates=Update.ALL_TYPES,
-        drop_pending_updates=True,
-    )
+    logger.info("🦂 Bot ULTRA INSTINTO BY LUIS R — INICIADO ✅")
+    app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
 
 if __name__ == "__main__":
