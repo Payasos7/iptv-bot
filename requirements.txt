@@ -1,5 +1,10 @@
 python-telegram-bot>=20.0
+
 requests>=2.31.0
+
 urllib3>=1.26.0
+
 pytz>=2024.1
- 
+
+cloudscraper>=1.2.71
+
