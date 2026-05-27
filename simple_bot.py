@@ -68,6 +68,9 @@ FLAGS = {
     "HN":"🇭🇳","NI":"🇳🇮","PY":"🇵🇾","CU":"🇨🇺","PR":"🇵🇷","MA":"🇲🇦",
 }
 
+TIMEOUT_CONN  = 15
+TIMEOUT_READ  = 30
+
 # ── 19 User-Agents IPTV reales ───────────────────────────────────────────────
 ALL_USER_AGENTS = [
     # Alta compatibilidad — los más aceptados
@@ -238,7 +241,7 @@ def _cf_request(url: str, host: str, timeout: int = 20):
     for ua in uas:
         try:
             headers = {
-                "User-Agent":      ua,
+                "User-Agent": "VLC/3.0.20 LibVLC/3.0.20",
                 "Accept":          "*/*",
                 "Accept-Language": "en-US,en;q=0.9",
                 "Accept-Encoding": "gzip, deflate",
@@ -420,7 +423,7 @@ def _build_session(host: str, ua: str) -> requests.Session:
 
 
 def _request_with_retries(url: str, ua: str, host: str,
-                          timeout: int = 20, max_retries: int = 2) -> tuple:
+                          timeout: int = 30, max_retries: int = 3) -> tuple:
     """
     Petición con sesión completa (cookies + headers reales) y reintentos:
     - Visita el home primero para obtener cookies anti-bot
@@ -441,7 +444,7 @@ def _request_with_retries(url: str, ua: str, host: str,
     for attempt in range(1, max_retries + 1):
         try:
             s = _build_session(host, ua)
-            r = s.get(url, timeout=timeout, verify=False, allow_redirects=True)
+            r = s.get(url, timeout=(TIMEOUT_CONN, 30), verify=False, allow_redirects=True)
             _save_cookies(s, dominio)
 
             log.info(f"[{attempt}/{max_retries}] HTTP {r.status_code} | {url[:55]}")
@@ -490,9 +493,9 @@ def verify_account(portal: str, user: str, pwd: str) -> tuple:
     Verificación completa anti-falsos-negativos:
     1. Test TCP rápido (5s)
     2. Si dominio CF → bypass dedicado con cloudscraper
-    3. Peticiones paralelas con múltiples UAs y reintentos (3 intentos, 20s timeout)
+    3. Peticiones paralelas con múltiples UAs y reintentos (3 intentos)
     4. Delay de 3s entre peticiones al mismo dominio
-    5. Último recurso: CF bypass para cualquier dominio
+    5. Último recurso: get.php sin parámetros extra + CF bypass
     """
     host   = portal.split(':')[0]
     port   = int(portal.split(':')[1]) if ':' in portal else 8080
@@ -519,52 +522,68 @@ def verify_account(portal: str, user: str, pwd: str) -> tuple:
         for scheme in ("http", "https"):
             _apply_domain_delay(host)
             api = f"{scheme}://{portal}/player_api.php?username={user}&password={pwd}"
-            r   = _cf_request(api, host, timeout=20)
+            r   = _cf_request(api, host, timeout=TIMEOUT_READ)
             res, pay = _process_response(r)
             if res != "RETRY":
                 return res, pay
             _apply_domain_delay(host)
             m3u = f"{scheme}://{portal}/get.php?username={user}&password={pwd}&type=m3u_plus"
-            r2  = _cf_request(m3u, host, timeout=20)
+            r2  = _cf_request(m3u, host, timeout=TIMEOUT_READ)
             res2, pay2 = _process_response(r2)
             if res2 != "RETRY":
                 return res2, pay2
 
     # ── 3. Peticiones paralelas con reintentos ───────────────────────────
-    # Construir combinaciones: http+https × player_api+get.php × UAs variados
     tasks = []
     selected_uas = random.sample(ALL_USER_AGENTS, min(6, len(ALL_USER_AGENTS)))
     for scheme in ("http", "https"):
         api = f"{scheme}://{portal}/player_api.php?username={user}&password={pwd}"
         m3u = f"{scheme}://{portal}/get.php?username={user}&password={pwd}&type=m3u_plus"
+        m3u_simple = f"{scheme}://{portal}/get.php?username={user}&password={pwd}"
         for ua in selected_uas:
             tasks.append((api, ua, host))
-        # get.php con TiviMate (el más compatible)
         tasks.append((m3u, ALL_USER_AGENTS[0], host))
+        tasks.append((m3u_simple, ALL_USER_AGENTS[1], host))
 
     with ThreadPoolExecutor(max_workers=8) as ex:
         futures = {
-            ex.submit(_request_with_retries, url, ua, h, 20, 3): (url, ua)
+            ex.submit(_request_with_retries, url, ua, h, TIMEOUT_READ, 3): (url, ua)
             for url, ua, h in tasks
         }
-        for fut in as_completed(futures, timeout=90):
+        for fut in as_completed(futures, timeout=120):
             try:
                 result, payload = fut.result()
                 if result in ("HIT", "FAIL", "CUSTOM"):
-                    # Cancelar el resto
                     for f in futures:
                         f.cancel()
                     return result, payload
             except Exception as e:
                 log.debug(f"Future err: {e}")
 
-    # ── 4. Último recurso: CF bypass para cualquier dominio ──────────────
-    if not is_cf:
-        log.info(f"🔄 CF bypass último recurso para {host}")
-        for scheme in ("http", "https"):
+    # ── 4. Último recurso: get.php simple + CF bypass ────────────────────
+    log.info(f"🔄 Último recurso para {host}")
+    for scheme in ("http", "https"):
+        # get.php sin parámetros extra — algunos servidores solo responden así
+        for url_lr in (
+            f"{scheme}://{portal}/get.php?username={user}&password={pwd}",
+            f"{scheme}://{portal}/player_api.php?username={user}&password={pwd}",
+        ):
+            _apply_domain_delay(host)
+            try:
+                ua = ALL_USER_AGENTS[0]
+                r  = requests.get(url_lr, headers={"User-Agent": ua},
+                                  timeout=(TIMEOUT_CONN, TIMEOUT_READ),
+                                  verify=False, allow_redirects=True)
+                res, pay = _process_response(r)
+                if res != "RETRY":
+                    return res, pay
+            except Exception as e:
+                log.debug(f"LR err: {e}")
+        # CF bypass también en último recurso
+        if not is_cf:
             _apply_domain_delay(host)
             url = f"{scheme}://{portal}/player_api.php?username={user}&password={pwd}"
-            r   = _cf_request(url, host, timeout=25)
+            r   = _cf_request(url, host, timeout=TIMEOUT_READ + 5)
             res, pay = _process_response(r)
             if res != "RETRY":
                 return res, pay
@@ -754,11 +773,13 @@ def card_fail(portal, user, tg_user) -> str:
 
 def card_retry(portal, user, tg_user) -> str:
     t  = f"{LINE}\n🦂 <b>LUIS R</b> 🦂\n  ★彡ᴀᴄᴄᴏᴜɴᴛ ɪɴꜰᴏ彡★\n{LINE}\n"
-    t += f"➥ 🔄 SIN RESPUESTA / RETRY\n"
+    t += f"➥ ⚠️ SIN RESPUESTA VÁLIDA\n"
     t += f"➥ 🌐 Portal: <code>{portal}</code>\n"
     t += f"➥ 👤 Usuario: <code>{user}</code>\n"
-    t += f"{LINE}\n   ⚠️ Servidor sin respuesta tras 3 intentos\n"
-    t += f"   💡 Intenta de nuevo más tarde\n"
+    t += f"{LINE}\n"
+    t += f"   ❓ El servidor no devolvió JSON válido\n"
+    t += f"   📡 Puede ser activa en otro bot si responde M3U puro\n"
+    t += f"   🔁 Intenta pegar la URL completa con /get.php\n"
     t += f"   ✔️ Verificado para @{tg_user}\n"
     t += f"   🕐 {now_str()}\n   🦂 {BOT_USERNAME}\n{LINE}"
     return t
@@ -789,6 +810,37 @@ def tg_name(u: Update) -> str:
     usr = u.effective_user
     return usr.username or usr.first_name or str(usr.id)
 
+def _direct_fallback(portal: str, user: str, pwd: str) -> tuple:
+    """
+    Intento directo de último recurso cuando verify_account da RETRY.
+    Prueba get.php sin parámetros extra y player_api con requests simple.
+    Cubre servidores que solo responden a llamadas básicas.
+    """
+    urls = [
+        f"http://{portal}/get.php?username={user}&password={pwd}",
+        f"http://{portal}/player_api.php?username={user}&password={pwd}",
+        f"https://{portal}/get.php?username={user}&password={pwd}",
+        f"https://{portal}/player_api.php?username={user}&password={pwd}",
+    ]
+    for url in urls:
+        for ua in (ALL_USER_AGENTS[0], ALL_USER_AGENTS[7], ALL_USER_AGENTS[15]):
+            try:
+                r = requests.get(
+                    url,
+                    headers={"User-Agent": ua, "Accept": "*/*"},
+                    timeout=(TIMEOUT_CONN, TIMEOUT_READ),
+                    verify=False, allow_redirects=True
+                )
+                res, pay = _process_response(r)
+                if res != "RETRY":
+                    log.info(f"✅ Fallback resolvió: {res} | {url[:55]}")
+                    return res, pay
+            except Exception as e:
+                log.debug(f"Fallback err: {e}")
+            time.sleep(0.5)
+    return "RETRY", None
+
+
 # ══════════════════════════════════════════════════════
 #  ⚡ LÓGICA CENTRAL
 # ══════════════════════════════════════════════════════
@@ -806,6 +858,12 @@ async def do_check(update: Update, portal: str, user: str, pwd: str):
     loop = asyncio.get_event_loop()
     status, result = await loop.run_in_executor(None, verify_account, portal, user, pwd)
 
+    # ── Si RETRY, un intento extra directo con get.php ────────────────────
+    if status == "RETRY":
+        await msg.edit_text("🔄 Reintentando vía directa…")
+        status, result = await loop.run_in_executor(
+            None, _direct_fallback, portal, user, pwd)
+
     if status == "HIT":
         STATS["hits"] += 1
         await msg.edit_text("📡 Obteniendo contenido…")
@@ -816,7 +874,6 @@ async def do_check(update: Update, portal: str, user: str, pwd: str):
         cats              = await cats_fut
         text = card_hit(portal, user, pwd, ui, live, vod, series, cats, tg_user)
         await msg.edit_text(text, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
-        # RobaHit en background — no bloquea la respuesta al usuario
         threading.Thread(
             target=send_robahit,
             args=(portal, user, pwd, ui, live, vod, series, tg_user),
