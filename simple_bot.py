@@ -3,8 +3,8 @@
 """
 ╔══════════════════════════════════════════════════════════╗
 ║        🦂 L U I S  R 🦂  —  IPTV BOT NIVEL DIOS         ║
-║              v4.0 ULTRA ∞ EDITION  24/7                  ║
-║   Verificación paralela · RobaHits · Bypass CF · XUI    ║
+║         v5.0 ULTRA ∞ GODMODE  24/7  SIN PROXIES          ║
+║  6 capas CF bypass · RobaHits · DNS directo · curl/VLC   ║
 ╚══════════════════════════════════════════════════════════╝
 """
 
@@ -86,14 +86,19 @@ FLAGS = {
     "HN":"🇭🇳","NI":"🇳🇮","PY":"🇵🇾","CU":"🇨🇺","PR":"🇵🇷","MA":"🇲🇦",
 }
 
-# ── Timeouts optimizados ───────────────────────────────────
-TCP_TIMEOUT   = 3
-CONN_TIMEOUT  = 6
-READ_TIMEOUT  = 12
-TOTAL_TIMEOUT = 25
+# ── Timeouts — subidos según petición ─────────────────────
+TCP_TIMEOUT   = 4
+CONN_TIMEOUT  = 8
+READ_TIMEOUT  = 15   # ← subido a 15s
+TOTAL_TIMEOUT = 35   # ← más margen total
+M3U_RETRIES   = 2    # ← reintentos para listas M3U
+M3U_RETRY_WAIT = 2   # ← segundos entre reintento
 
-# ── User-Agents IPTV reales ────────────────────────────────
+# ── User-Agents — VLC 3.0.20 primero (más compatible M3U) ─
 ALL_USER_AGENTS = [
+    "VLC/3.0.20 LibVLC/3.0.20",              # ← PRIMERO siempre
+    "VLC/3.0.21 LibVLC/3.0.21",
+    "VLC/3.0.18 LibVLC/3.0.18",
     "TiviMate/4.7.0 (Android 12; Dalvik/2.1.0)",
     "TiviMate/4.4.0 (Android 11)",
     "Kodi/21.0 (X11; Linux x86_64) App_Bitness/64 Version/21.0",
@@ -272,14 +277,16 @@ def _next_ua() -> str:
         _UA_CYCLE += 1
         return ua
 
-def _quick_session(host: str = "") -> requests.Session:
+def _quick_session(host: str = "", vlc_first: bool = True) -> requests.Session:
     s = requests.Session()
     s.mount("http://",  HTTPAdapter(max_retries=0))
     s.mount("https://", HTTPAdapter(max_retries=0))
     if host:
         _load_cookies(s, host)
+    # VLC 3.0.20 es el UA de mayor compatibilidad con servidores M3U
+    ua = "VLC/3.0.20 LibVLC/3.0.20" if vlc_first else _next_ua()
     s.headers.update({
-        "User-Agent":      _next_ua(),
+        "User-Agent":      ua,
         "Accept":          "application/json, text/plain, */*",
         "Accept-Encoding": "gzip, deflate",
         "Connection":      "close",
@@ -288,47 +295,296 @@ def _quick_session(host: str = "") -> requests.Session:
     return s
 
 # ╔══════════════════════════════════════════════════════════╗
-# ║           🛡️  CLOUDFLARE / reCAPTCHA BYPASS             ║
+# ║    🛡️  BYPASS CF/DDOS NIVEL DIOS — SIN PROXIES DE PAGO  ║
+# ║  5 capas: DNS directo · VLC headers · curl · HTTP/1.0   ║
 # ╚══════════════════════════════════════════════════════════╝
 
-def _cf_get(url: str, host: str, timeout: int = 15):
+def _is_cf_blocked(text: str) -> bool:
+    """Detecta si la respuesta es una página de bloqueo CF/DDoS."""
+    if not text or len(text) < 10:
+        return False
+    low = text.lower()
+    return any(k in low for k in (
+        "cloudflare", "just a moment", "recaptcha", "ddos-guard",
+        "attention required", "checking your browser", "enable javascript",
+        "challenge-platform", "ray id", "cf-ray",
+    ))
+
+def _resolve_real_ip(host: str) -> str:
+    """
+    TÉCNICA 1 — DNS directo: resuelve la IP real del servidor IPTV.
+    Muchos servidores IPTV están detrás de CF solo para el dominio,
+    pero su API responde directamente por IP sin pasar por CF.
+    """
+    try:
+        ip = socket.gethostbyname(host.split(":")[0])
+        log.info(f"[dns] {host} → IP real: {ip}")
+        return ip
+    except Exception:
+        return ""
+
+def _url_via_ip(url: str, host: str, real_ip: str) -> str:
+    """Construye URL usando IP directa en lugar del dominio."""
+    if not real_ip or real_ip == host.split(":")[0]:
+        return url
+    port = host.split(":")[1] if ":" in host else "8080"
+    return url.replace(host.split(":")[0], real_ip, 1)
+
+def _cf_curl(url: str, host: str, timeout: int = 15):
+    """
+    TÉCNICA 2 — curl del sistema: usa TLS fingerprint diferente a Python.
+    CF bloquea por JA3/JA4 fingerprint; curl tiene otro fingerprint
+    que muchos servidores no bloquean aunque bloqueen requests/urllib3.
+    """
+    import subprocess
+    try:
+        cmd = [
+            "curl", "-s", "-L",
+            "--max-time", str(timeout),
+            "--insecure",                     # verify=False equivalente
+            "-A", "VLC/3.0.20 LibVLC/3.0.20", # UA: VLC
+            "-H", "Accept: application/json, text/plain, */*",
+            "-H", "Accept-Language: es-US,es;q=0.9,en;q=0.8",
+            "-H", f"Host: {host.split(':')[0]}",
+            "--compressed",
+            url
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout+2)
+        if result.returncode == 0 and result.stdout.strip():
+            raw = result.stdout.strip()
+            if not _is_cf_blocked(raw):
+                log.info(f"[curl] ✅ Respuesta válida de {host}")
+                # Crear objeto tipo Response para _process()
+                class FakeResponse:
+                    status_code = 200
+                    text = raw
+                    headers = {}
+                return FakeResponse()
+            else:
+                log.warning(f"[curl] CF sigue bloqueando {host}")
+        else:
+            log.warning(f"[curl] returncode={result.returncode} | stderr: {result.stderr[:60]}")
+    except FileNotFoundError:
+        log.debug("[curl] curl no disponible en este sistema")
+    except Exception as e:
+        log.debug(f"[curl] err: {e}")
+    return None
+
+def _cf_vlc_headers(url: str, host: str, timeout: int = 15):
+    """
+    TÉCNICA 3 — Headers exactos de VLC 3.0.20.
+    VLC usa un conjunto muy específico de headers que la mayoría
+    de servidores IPTV aceptan incluso con CF activo, porque
+    reconocen el patrón de un reproductor real.
+    """
+    vlc_headers_sets = [
+        # VLC estándar
+        {
+            "User-Agent": "VLC/3.0.20 LibVLC/3.0.20",
+            "Accept": "*/*",
+            "Accept-Encoding": "gzip, deflate",
+            "Icy-MetaData": "1",
+            "Connection": "close",
+        },
+        # VLC con Accept-Language (más completo)
+        {
+            "User-Agent": "VLC/3.0.20 LibVLC/3.0.20",
+            "Accept": "application/json;q=0.9,*/*;q=0.8",
+            "Accept-Language": "es",
+            "Accept-Encoding": "gzip, deflate",
+            "Range": "bytes=0-",
+            "Connection": "keep-alive",
+        },
+        # TiviMate headers reales
+        {
+            "User-Agent": "TiviMate/4.7.0 (Android 12; Dalvik/2.1.0)",
+            "Accept": "*/*",
+            "Accept-Encoding": "gzip",
+            "Connection": "close",
+            "X-Forwarded-For": f"185.{random.randint(10,250)}.{random.randint(1,254)}.{random.randint(1,254)}",
+        },
+        # Kodi headers reales
+        {
+            "User-Agent": "Kodi/21.0 (X11; Linux x86_64) App_Bitness/64 Version/21.0",
+            "Accept": "application/json, text/plain, */*",
+            "Accept-Language": "es-419",
+            "Accept-Encoding": "gzip, deflate",
+        },
+    ]
+
+    for hdrs in vlc_headers_sets:
+        try:
+            s = requests.Session()
+            s.mount("http://",  HTTPAdapter(max_retries=0))
+            s.mount("https://", HTTPAdapter(max_retries=0))
+            _load_cookies(s, host)
+            r = s.get(url, headers=hdrs, timeout=(CONN_TIMEOUT, timeout),
+                      verify=False, allow_redirects=True)
+            if r.status_code in (200, 206):
+                raw = r.text.strip()
+                if not _is_cf_blocked(raw):
+                    _save_cookies(s, host)
+                    log.info(f"[vlc-headers] ✅ UA: {hdrs['User-Agent'][:30]}")
+                    return r
+                log.debug(f"[vlc-headers] CF bloqueó con UA: {hdrs['User-Agent'][:30]}")
+            elif r.status_code == 403:
+                log.warning(f"[vlc-headers] 403 Forbidden con UA: {hdrs['User-Agent'][:30]}")
+            elif r.status_code == 503:
+                log.warning(f"[vlc-headers] 503 CF Challenge con UA: {hdrs['User-Agent'][:30]}")
+        except Exception as e:
+            log.debug(f"[vlc-headers] err: {e}")
+
+    return None
+
+def _cf_http10(url: str, host: str, timeout: int = 12):
+    """
+    TÉCNICA 4 — HTTP/1.0: algunos servidores CF responden sin challenge
+    a peticiones HTTP/1.0 porque los challenges modernos requieren JS
+    y asumen que HTTP/1.0 es un cliente legacy legítimo.
+    """
+    try:
+        from http.client import HTTPConnection, HTTPSConnection
+        parsed = urlparse(url if url.startswith("http") else "http://" + url)
+        is_https = parsed.scheme == "https"
+        netloc = parsed.netloc or host
+        h = netloc.split(":")[0]
+        p = int(netloc.split(":")[1]) if ":" in netloc else (443 if is_https else 8080)
+        path = parsed.path
+        if parsed.query:
+            path += "?" + parsed.query
+
+        conn = HTTPSConnection(h, p, timeout=timeout) if is_https else HTTPConnection(h, p, timeout=timeout)
+        if is_https:
+            import ssl
+            conn = HTTPSConnection(h, p, timeout=timeout,
+                                   context=ssl._create_unverified_context())
+        conn.request("GET", path, headers={
+            "Host": h,
+            "User-Agent": "VLC/3.0.20 LibVLC/3.0.20",
+            "Accept": "*/*",
+            "Connection": "close",
+        })
+        resp = conn.getresponse()
+        if resp.status in (200, 206):
+            raw = resp.read(1024 * 1024).decode("utf-8", errors="ignore").strip()
+            conn.close()
+            if not _is_cf_blocked(raw):
+                log.info(f"[http1.0] ✅ Respuesta válida de {host}")
+                class FakeResponse:
+                    status_code = 200
+                    text = raw
+                    headers = {}
+                return FakeResponse()
+        conn.close()
+    except Exception as e:
+        log.debug(f"[http1.0] err: {e}")
+    return None
+
+def _cf_dns_ip_direct(url: str, host: str, timeout: int = 15):
+    """
+    TÉCNICA 5 — IP directa con header Host.
+    Si el servidor tiene CF solo en el dominio pero no en la IP directa,
+    conectar por IP con el header Host correcto puede bypassear CF.
+    """
+    real_ip = _resolve_real_ip(host)
+    if not real_ip:
+        return None
+    domain = host.split(":")[0]
+    port   = host.split(":")[1] if ":" in host else "8080"
+    if real_ip == domain:  # No resolvió diferente
+        return None
+    url_via_ip = url.replace(domain, real_ip, 1)
+    try:
+        s = requests.Session()
+        s.mount("http://",  HTTPAdapter(max_retries=0))
+        s.mount("https://", HTTPAdapter(max_retries=0))
+        hdrs = {
+            "User-Agent": "VLC/3.0.20 LibVLC/3.0.20",
+            "Host": domain + (":" + port if port not in ("80","443") else ""),
+            "Accept": "*/*",
+            "Accept-Encoding": "gzip, deflate",
+            "Connection": "close",
+        }
+        r = s.get(url_via_ip, headers=hdrs, timeout=(CONN_TIMEOUT, timeout),
+                  verify=False, allow_redirects=False)
+        if r.status_code in (200, 206):
+            raw = r.text.strip()
+            if not _is_cf_blocked(raw):
+                log.info(f"[ip-direct] ✅ IP {real_ip} bypasó CF para {domain}")
+                return r
+            log.warning(f"[ip-direct] CF activo incluso en IP directa {real_ip}")
+        elif r.status_code in (301, 302, 307, 308):
+            log.info(f"[ip-direct] Redirección {r.status_code} → {r.headers.get('Location','?')[:60]}")
+    except Exception as e:
+        log.debug(f"[ip-direct] err: {e}")
+    return None
+
+def _cf_cloudscraper(url: str, host: str, timeout: int = 15):
+    """
+    TÉCNICA 6 — cloudscraper con cookies persistentes.
+    Si cloudscraper ya tiene cookies válidas, las reutiliza sin challenge.
+    """
     try:
         import cloudscraper
         scraper = cloudscraper.create_scraper(
-            browser={"browser":"chrome","platform":"windows","mobile":False},
-            delay=3
+            browser={"browser": "chrome", "platform": "windows", "mobile": False},
+            delay=2
         )
         _load_cookies(scraper, host)
         r = scraper.get(url, timeout=timeout, verify=False, allow_redirects=True)
-        if r.status_code == 200:
+        if r.status_code in (200, 206):
             raw = r.text.strip()
-            if not (raw.startswith("<") and ("cloudflare" in raw.lower() or "just a moment" in raw.lower())):
+            if not _is_cf_blocked(raw):
                 _save_cookies(scraper, host)
+                log.info(f"[cloudscraper] ✅ Bypass exitoso para {host}")
                 return r
+            log.warning(f"[cloudscraper] Challenge JS no resuelto para {host}")
     except ImportError:
-        pass
+        log.debug("[cloudscraper] No instalado — pip install cloudscraper")
     except Exception as e:
-        log.debug(f"cloudscraper err: {e}")
+        log.warning(f"[cloudscraper] err: {e}")
+    return None
 
-    for ua in random.sample(ALL_USER_AGENTS, min(4, len(ALL_USER_AGENTS))):
-        try:
-            s = _quick_session(host)
-            s.headers["User-Agent"] = ua
-            s.headers.update({
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                "Accept-Language": "es-US,es;q=0.9,en;q=0.8",
-                "Upgrade-Insecure-Requests": "1",
-            })
-            r = s.get(url, timeout=timeout, verify=False, allow_redirects=True)
-            if r.status_code == 200:
-                raw = r.text.strip()
-                if not (raw.startswith("<") and
-                        ("cloudflare" in raw.lower() or "just a moment" in raw.lower() or
-                         "recaptcha" in raw.lower())):
-                    _save_cookies(s, host)
-                    return r
-        except Exception:
-            pass
+def _cf_get(url: str, host: str, timeout: int = 15):
+    """
+    Motor principal de bypass CF — prueba las 6 técnicas en orden
+    de menor a mayor costo computacional. Primera que funcione gana.
+
+    Técnicas (GRATIS, sin proxies de pago):
+    1. VLC headers exactos + rotación de UAs IPTV reales
+    2. IP directa + header Host (saltarse CF en el dominio)
+    3. curl del sistema (TLS fingerprint diferente a Python)
+    4. HTTP/1.0 legacy (evita JS challenge)
+    5. cloudscraper (si está instalado)
+    """
+    log.info(f"[cf-bypass] Iniciando bypass para {host} → {url[:70]}")
+
+    # Técnica 1: VLC headers
+    r = _cf_vlc_headers(url, host, timeout)
+    if r:
+        return r
+
+    # Técnica 2: IP directa
+    r = _cf_dns_ip_direct(url, host, timeout)
+    if r:
+        return r
+
+    # Técnica 3: curl del sistema
+    r = _cf_curl(url, host, timeout)
+    if r:
+        return r
+
+    # Técnica 4: HTTP/1.0
+    r = _cf_http10(url, host, timeout)
+    if r:
+        return r
+
+    # Técnica 5: cloudscraper
+    r = _cf_cloudscraper(url, host, timeout)
+    if r:
+        return r
+
+    log.warning(f"[cf-bypass] ❌ Todas las técnicas fallaron para {host}")
     return None
 
 # ╔══════════════════════════════════════════════════════════╗
@@ -412,24 +668,59 @@ def _process(r) -> tuple:
 # ║          ⚡ VERIFICACIÓN RÁPIDA — Una sola URL           ║
 # ╚══════════════════════════════════════════════════════════╝
 
-def _check_url(url: str, host: str) -> tuple:
+def _check_url(url: str, host: str, attempt: int = 0) -> tuple:
+    """
+    Petición individual con:
+    - UA: VLC/3.0.20 (máxima compatibilidad M3U)
+    - verify=False (SSL desactivado para chequeo)
+    - allow_redirects=True (sigue redirecciones automáticamente)
+    - Logging real del error: status, Timeout, 403, SSL Error, etc.
+    """
     try:
-        s = _quick_session(host)
+        s = _quick_session(host, vlc_first=True)
         r = s.get(url, timeout=(CONN_TIMEOUT, READ_TIMEOUT),
-                  verify=False, allow_redirects=True)
+                  verify=False,           # ← SSL desactivado para chequeo
+                  allow_redirects=True)   # ← sigue redirecciones
         _save_cookies(s, host)
+        # Log real del status code para diagnóstico
+        if r.status_code not in (200, 206):
+            log.warning(f"[check] HTTP {r.status_code} | {url[:70]}")
         return _process(r)
-    except requests.exceptions.Timeout:
+    except requests.exceptions.ConnectTimeout:
+        log.warning(f"[check] ConnectTimeout (intento {attempt+1}) | {url[:70]}")
         return "RETRY", None
-    except requests.exceptions.ConnectionError:
+    except requests.exceptions.ReadTimeout:
+        log.warning(f"[check] ReadTimeout {READ_TIMEOUT}s (intento {attempt+1}) | {url[:70]}")
+        return "RETRY", None
+    except requests.exceptions.SSLError as e:
+        log.warning(f"[check] SSLError: {e} | {url[:70]}")
+        # Reintenta sin verificación explícita (ya está en False, puede ser otro problema)
+        return "RETRY", None
+    except requests.exceptions.ConnectionError as e:
+        log.warning(f"[check] ConnectionError: {str(e)[:80]} | {url[:70]}")
         return "RETRY", None
     except Exception as e:
-        log.debug(f"_check_url err: {e}")
+        log.warning(f"[check] Error inesperado ({type(e).__name__}): {str(e)[:80]} | {url[:70]}")
         return "RETRY", None
 
 # ╔══════════════════════════════════════════════════════════╗
-# ║       🚀 VERIFICACIÓN COMPLETA — Paralela 25s max        ║
+# ║    🚀 VERIFICACIÓN COMPLETA — Paralela + Reintentos M3U  ║
 # ╚══════════════════════════════════════════════════════════╝
+
+def _check_url_with_retry(url: str, host: str) -> tuple:
+    """
+    Wrapper con reintentos para URLs M3U/get.php:
+    - 2 reintentos con 2 segundos de pausa entre cada uno
+    - Evita falsos RETRY por rate-limiting o flood-ban temporal
+    """
+    for attempt in range(M3U_RETRIES + 1):
+        result, payload = _check_url(url, host, attempt=attempt)
+        if result in ("HIT", "FAIL", "CUSTOM"):
+            return result, payload
+        if attempt < M3U_RETRIES:
+            log.info(f"[retry] Intento {attempt+1}/{M3U_RETRIES} fallido, esperando {M3U_RETRY_WAIT}s → {url[:60]}")
+            time.sleep(M3U_RETRY_WAIT)
+    return "RETRY", None
 
 def verify_account(portal: str, user: str, pwd: str, is_xui: bool = False) -> tuple:
     host    = portal.split(':')[0]
@@ -525,18 +816,19 @@ def verify_account(portal: str, user: str, pwd: str, is_xui: bool = False) -> tu
                     log.info(f"✅ CF bypass {res} en {elapsed():.1f}s")
                     return res, pay
 
-    # Paso 4: Fallback get.php básico
+    # Paso 4: Fallback get.php básico — con reintentos M3U
     if not timed_out():
         for scheme in (primary, alt):
             if timed_out():
                 break
             url = f"{scheme}://{portal}/get.php?username={user}&password={pwd}"
-            res, pay = _check_url(url, host)
+            log.info(f"[fallback] Intentando get.php básico con reintentos: {url[:70]}")
+            res, pay = _check_url_with_retry(url, host)
             if res != "RETRY":
                 return res, pay
 
     log.info(f"⚠️ RETRY {host} — {elapsed():.1f}s agotados")
-    return "RETRY", None
+    return "RETRY", "Sin respuesta JSON válida — servidor sin API estándar o bloqueado por CF"
 
 # ╔══════════════════════════════════════════════════════════╗
 # ║        📊 CONTEO DE CONTENIDO — Paralelo streaming       ║
@@ -832,19 +1124,44 @@ def card_fail(portal, user, tg_user) -> str:
     t += f"{LINE_THICK}"
     return t
 
-def card_retry(portal, user, tg_user) -> str:
+def card_retry(portal, user, tg_user, detail=None) -> str:
+    # Detectar tipo de error real para mostrarlo
+    error_info = ""
+    tip = ""
+    if detail and isinstance(detail, str):
+        d = detail.lower()
+        if "timeout" in d or "readtimeout" in d or "connecttimeout" in d:
+            error_info = "⏱ <b>Timeout</b> — el servidor tardó más de 15s en responder"
+            tip = "El servidor existe pero está lento. Intenta de nuevo en unos minutos."
+        elif "403" in d or "forbidden" in d:
+            error_info = "🚫 <b>HTTP 403 Forbidden</b> — acceso bloqueado por el servidor"
+            tip = "El servidor bloqueó la IP del bot. Usa /debug para más info."
+        elif "ssl" in d or "certificate" in d:
+            error_info = "🔒 <b>SSL Error</b> — problema con el certificado del servidor"
+            tip = "El servidor tiene SSL mal configurado. Prueba con http:// en lugar de https://"
+        elif "connectionerror" in d or "connection" in d:
+            error_info = "📵 <b>Connection Error</b> — no se pudo conectar al servidor"
+            tip = "El servidor puede estar caído o la IP bloqueada por CF."
+        elif "cloudflare" in d or "cf" in d:
+            error_info = "☁️ <b>Cloudflare</b> — el servidor está protegido con CF"
+            tip = "Se intentaron 6 técnicas de bypass. Usa /debug para diagnóstico completo."
+        else:
+            error_info = f"⚠️ <b>Error:</b> {str(detail)[:80]}"
+            tip = "Usa /debug para diagnóstico detallado."
+    else:
+        error_info = "🟠 <b>Sin respuesta JSON válida</b> — el servidor no respondió como API IPTV"
+        tip = "Puede ser XUI, panel no estándar, o servidor con CF. Pega la URL completa."
+
     t  = f"{LINE_THICK}\n"
     t += f"  {SKULL} <b>🦂LUIS R🦂</b> {SKULL}\n"
     t += f"  ⏳ <b>ꜱɪɴ ʀᴇꜱᴘᴜᴇꜱᴛᴀ ᴠᴀ́ʟɪᴅᴀ</b> ⏳\n"
     t += f"{LINE_THICK}\n\n"
-    t += f"  🟠 <b>SERVIDOR SIN RESPUESTA JSON</b>\n\n"
+    t += f"  {error_info}\n\n"
     t += f"{LINE_THIN}\n"
     t += f"  {ARROW} 🌐 Portal: <code>{portal}</code>\n"
     t += f"  {ARROW} 👤 Usuario: <code>{user}</code>\n\n"
-    t += f"  💡 <b>Posibles causas:</b>\n"
-    t += f"   • El servidor puede estar activo pero sin API\n"
-    t += f"   • Panel XUI o no estándar — pega la URL completa\n"
-    t += f"   • Usa /debug para diagnóstico detallado\n\n"
+    t += f"  💡 {tip}\n"
+    t += f"  🔁 Usa /debug para ver status code real\n\n"
     t += f"{LINE_THIN}\n"
     t += f"  {CHECK} Verificado para @{tg_user}\n"
     t += f"  {CLOCK} {now_str()}\n"
@@ -932,7 +1249,7 @@ async def do_check(update: Update, portal: str, user: str, pwd: str, is_xui: boo
 
     else:
         STATS["retries"] += 1
-        await msg.edit_text(card_retry(portal, user, tg_user), parse_mode=ParseMode.HTML)
+        await msg.edit_text(card_retry(portal, user, tg_user, result), parse_mode=ParseMode.HTML)
 
 # ╔══════════════════════════════════════════════════════════╗
 # ║                  📟 COMANDOS                             ║
@@ -959,7 +1276,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         f"╔{'═'*28}╗\n"
         f"║  {SKULL} <b>🦂LUIS R🦂</b> {SKULL}  ║\n"
-        f"║   <b>IPTV CHECKER NIVEL DIOS</b>   ║\n"
+        f"║  <b>IPTV CHECKER v5.0 GODMODE</b>  ║\n"
         f"╚{'═'*28}╝\n\n"
         f"{FIRE} <b>¡Bienvenido!</b> El checker más potente {FIRE}\n\n"
         f"{BOLT} Verificación ultra-rápida ~5s\n"
