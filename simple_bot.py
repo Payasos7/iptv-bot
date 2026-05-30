@@ -1,3 +1,4 @@
+
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
@@ -71,8 +72,8 @@ FLAGS = {
 
 # ── Timeouts ───────────────────────────────────────────
 T_CONN  = 8    # conexión
-T_READ  = 20   # lectura (subido para servidores lentos)
-T_TOTAL = 45   # total por cuenta
+T_READ  = 30   # lectura (subido para servidores lentos)
+T_TOTAL = 60   # total por cuenta
 
 # ── User-Agents — VLC primero (más compatible con IPTV) ─
 UAS = [
@@ -260,10 +261,20 @@ def extract(text: str):
 # ╚══════════════════════════════════════════════════════╝
 
 def parse_json_safe(raw: str):
-    raw = raw.strip()
+    # Limpiar BOM y espacios
+    raw = raw.lstrip('\ufeff').strip()
+    # Eliminar prefijos anti JSON-hijacking  )]}'\n  o  /* */
+    if raw.startswith(")]}'") or raw.startswith(")]}\\'"  ):
+        raw = raw.split('\n', 1)[-1].lstrip()
+    elif raw.startswith(")]}" ):
+        raw = raw.split('\n', 1)[-1].lstrip()
+    elif raw.startswith("/*"):
+        end = raw.find("*/")
+        if end != -1:
+            raw = raw[end + 2:].lstrip()
     try: return json.loads(raw)
     except Exception: pass
-    for ch in ('{','['):
+    for ch in ('{', '['):
         idx = raw.find(ch)
         if idx >= 0:
             try: return json.loads(raw[idx:])
@@ -392,7 +403,7 @@ def process(r) -> tuple:
 
     data = parse_json_safe(raw)
     if data is None:
-        log.debug(f"[process] No JSON ni M3U: {raw[:80]}")
+        log.debug(f"[process] Respuesta no reconocida: {raw[:200]}")
         return "RETRY", None
 
     return analyze(data)
