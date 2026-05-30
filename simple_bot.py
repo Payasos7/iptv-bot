@@ -93,6 +93,7 @@ ACTIVE_ST = {
     "active","activo","activa","activated","1","true",
     "enabled","ok","valid","online","alive","running",
     "live","subscribed","premium","vip","yes",
+    "actif","ativo","attivo","aktiv","aktivno",
 }
 # ── Estados inactivos definitivos ─────────────────────
 INACTIVE_ST = {
@@ -263,8 +264,8 @@ def extract(text: str):
 def parse_json_safe(raw: str):
     # Limpiar BOM y espacios
     raw = raw.lstrip('\ufeff').strip()
-    # Eliminar prefijos anti JSON-hijacking  )]}'\n  o  /* */
-    if raw.startswith(")]}'") or raw.startswith(")]}\\'"  ):
+    # Eliminar prefijos anti JSON-hijacking: )]}'\n  o  /* */
+    if raw.startswith(")]}'") or raw.startswith(")]}\\'" ):
         raw = raw.split('\n', 1)[-1].lstrip()
     elif raw.startswith(")]}" ):
         raw = raw.split('\n', 1)[-1].lstrip()
@@ -285,9 +286,10 @@ def analyze(data) -> tuple:
     """
     Analiza el JSON de respuesta del servidor IPTV.
     Devuelve ("HIT"|"CUSTOM"|"FAIL"|"RETRY", payload)
+    Lógica alineada con jcinfo() del checker de referencia.
     """
     if not isinstance(data, dict):
-        # Lista JSON → HIT si tiene canales
+        # Lista JSON → el servidor devolvió canales directamente → HIT
         if isinstance(data, list) and len(data) > 0:
             return "HIT", {
                 "user_info": {"auth":1,"status":"Active","exp_date":"0",
@@ -297,60 +299,68 @@ def analyze(data) -> tuple:
             }
         return "RETRY", None
 
-    # Buscar user_info en distintas estructuras
-    ui = (data.get("user_info")
-          or data.get("userInfo")
-          or data.get("user")
-          or None)
+    # user_info puede venir en distintos campos o en la raíz
+    ui = data.get("user_info") or data.get("userInfo") or data.get("user")
 
-    # Algunos servidores devuelven todo en raíz
-    if ui is None:
+    # Si no hay sub-objeto user_info, verificar si la raíz tiene campos de cuenta
+    if not isinstance(ui, dict):
         if any(k in data for k in ("auth","username","exp_date","max_connections","status")):
             ui = data
         else:
             return "RETRY", None
 
-    # Leer auth — puede ser int, str, bool, o ausente
+    # ── Leer auth ──────────────────────────────────────────────────────────
+    # Guía: jcinfo() verifica status=='active'. Aquí auth es la primera barrera.
+    # auth=0 significa explícitamente "cuenta inválida" en la API Xtream/XUI.
+    # auth=1 significa "existe". El status dice si está activa o no.
     auth_raw = ui.get("auth", ui.get("authenticated", ui.get("valid", None)))
+
     if auth_raw is None:
-        # Sin campo auth: si tiene status o exp_date, asumir válido
-        if any(k in ui for k in ("status","exp_date","max_connections")):
-            auth = 1
-        else:
+        # Panel sin campo auth: si tiene status o exp_date, seguir con status
+        if not any(k in ui for k in ("status", "exp_date", "max_connections")):
             return "RETRY", None
+        auth = 1  # asumir válido y dejar que el status decida
     else:
-        try:
-            auth = int(str(auth_raw))
-        except Exception:
-            auth = 1 if str(auth_raw).lower() in ("true","yes","ok","valid","1") else 0
+        s = str(auth_raw).strip().lower()
+        if s in ("1", "true", "yes", "ok", "valid"):
+            auth = 1
+        elif s in ("0", "false", "no", "invalid", ""):
+            auth = 0
+        else:
+            try:
+                auth = 1 if int(s) != 0 else 0
+            except Exception:
+                auth = 0
 
     if auth == 0:
         return "FAIL", None
 
-    # Auth == 1 → cuenta existe, revisar status
+    # ── Auth != 0: revisar status ───────────────────────────────────────────
     real_ui = data.get("user_info", ui)
     payload = {
         "user_info":   real_ui,
         "server_info": data.get("server_info", {}),
     }
 
+    # Extraer status — igual que jcinfo(): user_info.get('status', '')
     status = str(
-        real_ui.get("status")
-        or real_ui.get("account_status")
-        or real_ui.get("state")
-        or "active"   # si no hay campo status y auth=1, asumir activo
+        real_ui.get("status") or
+        real_ui.get("account_status") or
+        real_ui.get("state") or ""
     ).strip().lower()
 
-    if not status or status in ("none","null",""):
-        status = "active"
+    # Sin status y auth=1 → asumir activo (algunos paneles no envían status)
+    if not status or status in ("none", "null"):
+        return "HIT", payload
 
     if status in ACTIVE_ST:
         return "HIT", payload
+
     if status in INACTIVE_ST:
         return "CUSTOM", payload
 
-    # Status desconocido con auth=1 → marcar HIT (cuenta responde)
-    log.info(f"[analyze] status desconocido '{status}' con auth=1 → HIT")
+    # Status no reconocido pero auth=1 → HIT (la cuenta existe y responde)
+    log.debug(f"[analyze] status no reconocido '{status}' con auth≠0 → HIT")
     return "HIT", payload
 
 
@@ -361,12 +371,12 @@ def process(r) -> tuple:
 
     code = r.status_code
 
-    # 404 = usuario no existe
-    if code == 404:
+    # 4xx explícito = credenciales rechazadas
+    if code in (401, 403, 404):
         return "FAIL", None
 
-    # Sin contenido
-    if code in (502, 504):
+    # Errores de servidor
+    if code in (500, 502, 503, 504):
         return "RETRY", None
 
     try:
@@ -377,18 +387,24 @@ def process(r) -> tuple:
     if not raw or len(raw) < 4:
         return "RETRY", None
 
-    # Página HTML
+    # Detectar HTML (Cloudflare, error de servidor, página web)
     if raw[0] == "<":
         if is_cf_page(raw):
             return "RETRY", None
-        # Otro HTML (error de servidor)
         return "RETRY", None
 
-    # Error en texto plano
+    # Errores en texto plano — igual que jcinfo() del checker de referencia
+    # Estos son errores XUI One / Xtream que vienen sin JSON
     UP = raw.upper()
     for k in PLAIN_FAIL:
         if k in UP:
             return "FAIL", None
+
+    # Detectar respuestas no-JSON que no son M3U ni error conocido
+    # (ej: texto HTML sin < al inicio, redirect en texto, etc.)
+    if not (raw[0] in ('{', '[', '#') or raw.startswith('<!')):
+        # Si no parece JSON ni M3U, intentar parse igual (por si acaso)
+        pass
 
     # Lista M3U directa → HIT inmediato
     if raw.startswith("#EXTM3U") or raw.startswith("#EXT-X-"):
