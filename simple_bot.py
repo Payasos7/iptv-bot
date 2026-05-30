@@ -3,7 +3,7 @@
 """
 ╔══════════════════════════════════════════════════════════╗
 ║        🦂 L U I S  R 🦂  —  IPTV BOT NIVEL DIOS         ║
-║              v6.0 FINAL ∞ DEFINITIVO  24/7               ║
+║              v6.1 MEJORADO ∞ DEFINITIVO  24/7            ║
 ║   Xtream · XUI One · M3U · Cloudflare · Todos formatos   ║
 ╚══════════════════════════════════════════════════════════╝
 """
@@ -69,10 +69,10 @@ FLAGS = {
     "HN":"🇭🇳","NI":"🇳🇮","PY":"🇵🇾","CU":"🇨🇺","PR":"🇵🇷","MA":"🇲🇦",
 }
 
-# ── Timeouts ───────────────────────────────────────────
+# ── Timeouts (MEJORA #3: aumentados para servidores lentos) ─
 T_CONN  = 8    # conexión
-T_READ  = 20   # lectura (subido para servidores lentos)
-T_TOTAL = 45   # total por cuenta
+T_READ  = 30   # lectura  (antes 20)
+T_TOTAL = 60   # total    (antes 45)
 
 # ── User-Agents — VLC primero (más compatible con IPTV) ─
 UAS = [
@@ -259,64 +259,100 @@ def extract(text: str):
 # ║           🔬 ANÁLISIS DE RESPUESTA UNIVERSAL         ║
 # ╚══════════════════════════════════════════════════════╝
 
+# MEJORA #1: parse_json_safe con BOM y prefijos dañinos
 def parse_json_safe(raw: str):
-    raw = raw.strip()
-    try: return json.loads(raw)
-    except Exception: pass
-    for ch in ('{','['):
+    """Parsea JSON tolerando BOM, prefijos de protección y offsets."""
+    raw = raw.lstrip('\ufeff').strip()
+
+    # Eliminar protección contra JSON hijacking: )]}',\n  o  /* ... */
+    if raw.startswith(")]}'") or raw.startswith(")]}'") or raw.startswith(")]}\\'"):
+        raw = raw.split('\n', 1)[-1].lstrip()
+    elif raw.startswith(")]}"):
+        raw = raw.split('\n', 1)[-1].lstrip()
+    elif raw.startswith("/*"):
+        # Buscar cierre de comentario
+        end = raw.find("*/")
+        if end != -1:
+            raw = raw[end+2:].lstrip()
+
+    try:
+        return json.loads(raw)
+    except Exception:
+        pass
+
+    # Intentar desde el primer { o [
+    for ch in ('{', '['):
         idx = raw.find(ch)
         if idx >= 0:
-            try: return json.loads(raw[idx:])
-            except Exception: pass
+            try:
+                return json.loads(raw[idx:])
+            except Exception:
+                pass
+
     return None
 
+
+# MEJORA #2: analyze más tolerante a estructuras no estándar
 def analyze(data) -> tuple:
     """
     Analiza el JSON de respuesta del servidor IPTV.
     Devuelve ("HIT"|"CUSTOM"|"FAIL"|"RETRY", payload)
     """
     if not isinstance(data, dict):
-        # Lista JSON → HIT si tiene canales
+        # Lista JSON → HIT si tiene canales (servidor M3U que responde en JSON)
         if isinstance(data, list) and len(data) > 0:
             return "HIT", {
-                "user_info": {"auth":1,"status":"Active","exp_date":"0",
-                              "active_cons":"?","max_connections":"?",
-                              "is_trial":"0","created_at":"0"},
+                "user_info": {
+                    "auth": 1, "status": "Active", "exp_date": "0",
+                    "active_cons": "?", "max_connections": "?",
+                    "is_trial": "0", "created_at": "0"
+                },
                 "server_info": {}
             }
         return "RETRY", None
 
-    # Buscar user_info en distintas estructuras
+    # user_info puede estar en distintos campos o en la raíz
     ui = (data.get("user_info")
           or data.get("userInfo")
           or data.get("user")
           or None)
 
-    # Algunos servidores devuelven todo en raíz
+    # Si no hay sub-objeto, verificar si la raíz tiene campos de cuenta
     if ui is None:
-        if any(k in data for k in ("auth","username","exp_date","max_connections","status")):
+        if "status" in data and "exp_date" in data:
+            ui = data
+        elif any(k in data for k in ("auth","username","exp_date","max_connections","status")):
             ui = data
         else:
             return "RETRY", None
 
-    # Leer auth — puede ser int, str, bool, o ausente
+    if not isinstance(ui, dict):
+        ui = {}
+
+    # Leer auth — puede ser int, str, bool o ausente
     auth_raw = ui.get("auth", ui.get("authenticated", ui.get("valid", None)))
+
     if auth_raw is None:
-        # Sin campo auth: si tiene status o exp_date, asumir válido
-        if any(k in ui for k in ("status","exp_date","max_connections")):
+        # Sin campo auth explícito: si hay status/exp_date asumir válido
+        if any(k in ui for k in ("status", "exp_date", "max_connections")):
             auth = 1
         else:
             return "RETRY", None
     else:
-        try:
-            auth = int(str(auth_raw))
-        except Exception:
-            auth = 1 if str(auth_raw).lower() in ("true","yes","ok","valid","1") else 0
+        if str(auth_raw).lower() in ("1", "true", "yes", "ok", "valid"):
+            auth = 1
+        elif str(auth_raw).lower() in ("0", "false", "no", "invalid"):
+            auth = 0
+        else:
+            try:
+                auth = int(str(auth_raw))
+            except Exception:
+                auth = 0
 
     if auth == 0:
         return "FAIL", None
 
-    # Auth == 1 → cuenta existe, revisar status
+    # auth == 1 → cuenta existe, revisar status
     real_ui = data.get("user_info", ui)
     payload = {
         "user_info":   real_ui,
@@ -327,10 +363,10 @@ def analyze(data) -> tuple:
         real_ui.get("status")
         or real_ui.get("account_status")
         or real_ui.get("state")
-        or "active"   # si no hay campo status y auth=1, asumir activo
+        or "active"
     ).strip().lower()
 
-    if not status or status in ("none","null",""):
+    if not status or status in ("none", "null", ""):
         status = "active"
 
     if status in ACTIVE_ST:
@@ -338,7 +374,7 @@ def analyze(data) -> tuple:
     if status in INACTIVE_ST:
         return "CUSTOM", payload
 
-    # Status desconocido con auth=1 → marcar HIT (cuenta responde)
+    # Status desconocido con auth=1 → HIT (la cuenta responde)
     log.info(f"[analyze] status desconocido '{status}' con auth=1 → HIT")
     return "HIT", payload
 
@@ -354,7 +390,7 @@ def process(r) -> tuple:
     if code == 404:
         return "FAIL", None
 
-    # Sin contenido
+    # Sin contenido o gateway error
     if code in (502, 504):
         return "RETRY", None
 
@@ -370,7 +406,6 @@ def process(r) -> tuple:
     if raw[0] == "<":
         if is_cf_page(raw):
             return "RETRY", None
-        # Otro HTML (error de servidor)
         return "RETRY", None
 
     # Error en texto plano
@@ -392,7 +427,8 @@ def process(r) -> tuple:
 
     data = parse_json_safe(raw)
     if data is None:
-        log.debug(f"[process] No JSON ni M3U: {raw[:80]}")
+        # MEJORA #4: loggear respuesta no reconocida para depuración
+        log.debug(f"[process] Respuesta no reconocida: {raw[:200]}")
         return "RETRY", None
 
     return analyze(data)
@@ -430,7 +466,7 @@ def fetch(url: str, host: str, ua: str = None, extra_headers: dict = None) -> tu
         log.info(f"[http] ReadTimeout({T_READ}s) {url[:70]}")
         return "RETRY", None
     except requests.exceptions.SSLError:
-        # Reintentar sin verificar (ya es False, puede ser otro problema SSL)
+        # Reintentar sin verificar
         try:
             import urllib3
             urllib3.disable_warnings()
@@ -598,7 +634,6 @@ def verify(portal: str, user: str, pwd: str,
             return res, pay
 
     # ── Construir todas las URLs a probar ─────────────
-    # Determinar esquema por puerto
     if port in (443, 8443, 2053, 2083, 2087, 2096):
         schemes = ["https", "http"]
     else:
@@ -621,7 +656,6 @@ def verify(portal: str, user: str, pwd: str,
         base = f"{sc}://{portal}"
         urls.append(f"{base}/playlist/{user}/{pwd}/m3u_plus")
         urls.append(f"{base}/playlist/{user}/{pwd}/m3u")
-        # get.php sin type
         urls.append(f"{base}/get.php?username={user}&password={pwd}")
 
     # Dedup manteniendo orden
@@ -651,7 +685,7 @@ def verify(portal: str, user: str, pwd: str,
         log.info(f"[verify] Reintentando con UA alternativo para {host}")
         for ua in (UAS[1], UAS[2], UAS[3]):
             if timedout(): break
-            for sc in schemes[:1]:  # solo http
+            for sc in schemes[:1]:
                 base = f"{sc}://{portal}"
                 for ep in (
                     f"{base}/player_api.php?username={user}&password={pwd}",
@@ -665,7 +699,7 @@ def verify(portal: str, user: str, pwd: str,
                         return res, pay
                     time.sleep(0.3)
 
-    # ── Paso 3: Bypass CF (siempre, no solo dominios conocidos) ──
+    # ── Paso 3: Bypass CF ─────────────────────────────
     if not timedout():
         log.info(f"[verify] Intentando bypass CF para {host}")
         for sc in schemes:
@@ -750,7 +784,6 @@ def get_cats(portal: str, user: str, pwd: str, limit: int = 20) -> str:
         if r.status_code != 200: return ""
         cats = r.json()
         if not isinstance(cats, list) or not cats: return ""
-        # Contar canales por categoría
         count_map = {}
         try:
             rc = requests.get(
@@ -888,7 +921,7 @@ def card_custom(portal, user, pwd, ui, tg_user) -> str:
 
 def card_fail(portal, user, tg_user) -> str:
     t  = f"{L1}\n  {SK} <b>🦂LUIS R🦂</b> {SK}\n"
-    t += f"  {CRS} <b>ᴄᴜᴇɴᴛᴀ ɪɴᴠᴀ́ʟɪᴅᴀ</b>\n{L1}\n\n"
+    t += f"  {CRS} <b>ᴄʀᴇᴅᴇɴᴄɪᴀʟᴇꜱ ɪɴᴠᴀ́ʟɪᴅᴀꜱ</b>\n{L1}\n\n"
     t += f"  🔴 <b>CREDENCIALES INCORRECTAS</b>\n\n{L2}\n"
     t += f"  {ARR} 🌐 <code>{portal}</code>\n"
     t += f"  {ARR} 👤 <code>{user}</code>\n"
@@ -1014,7 +1047,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         f"╔{'═'*28}╗\n"
         f"║  {SK} <b>🦂LUIS R🦂</b> {SK}  ║\n"
-        f"║  <b>IPTV CHECKER v6.0 FINAL</b>  ║\n"
+        f"║  <b>IPTV CHECKER v6.1 MEJORADO</b>  ║\n"
         f"╚{'═'*28}╝\n\n"
         f"{FIRE} <b>¡Bienvenido!</b> Checker definitivo {FIRE}\n\n"
         f"{BOLT} Ultra rápido · Todos los formatos\n"
@@ -1073,7 +1106,8 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"{L2}\n  {SHLD} SISTEMA\n{L2}\n"
         f"  Cloudscraper: {cs}\n"
         f"  RobaHits → <code>{ROBAHITS_CHATID}</code>\n"
-        f"  Threads: {threading.active_count()}\n\n"
+        f"  Threads: {threading.active_count()}\n"
+        f"  T_READ: {T_READ}s | T_TOTAL: {T_TOTAL}s\n\n"
         f"  {SK} {BOT_USERNAME}\n{L1}",
         parse_mode=ParseMode.HTML)
 
@@ -1118,11 +1152,11 @@ async def cmd_debug(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # HTTP tests
     for scheme in ("http","https"):
         for ep,epath in [
-            ("player_api", f"/{scheme}://{portal}/player_api.php?username={user}&password={pwd}"),
-            ("get.php",    f"/{scheme}://{portal}/get.php?username={user}&password={pwd}&type=m3u_plus"),
-            ("playlist",   f"/{scheme}://{portal}/playlist/{user}/{pwd}/m3u_plus"),
+            ("player_api", f"{scheme}://{portal}/player_api.php?username={user}&password={pwd}"),
+            ("get.php",    f"{scheme}://{portal}/get.php?username={user}&password={pwd}&type=m3u_plus"),
+            ("playlist",   f"{scheme}://{portal}/playlist/{user}/{pwd}/m3u_plus"),
         ]:
-            url = epath[1:]
+            url = epath
             lines.append(f"🔗 <code>{scheme.upper()} {ep}</code>")
             try:
                 r = requests.get(url,
@@ -1244,7 +1278,7 @@ def main():
         return
 
     threading.Thread(target=keep_alive, daemon=True).start()
-    log.info(f"🦂 BOT 🦂LUIS R🦂 v6.0 FINAL | TZ:{TZ_NAME} | T_READ:{T_READ}s | T_TOTAL:{T_TOTAL}s")
+    log.info(f"🦂 BOT 🦂LUIS R🦂 v6.1 MEJORADO | TZ:{TZ_NAME} | T_READ:{T_READ}s | T_TOTAL:{T_TOTAL}s")
 
     delays = [5,10,15,30,60]
     attempt = 0
@@ -1266,7 +1300,7 @@ def main():
             app.add_handler(MessageHandler(
                 filters.TEXT & ~filters.COMMAND, handle_msg))
 
-            log.info("✅ Bot 🦂LUIS R🦂 v6.0 corriendo 24/7.")
+            log.info("✅ Bot 🦂LUIS R🦂 v6.1 corriendo 24/7.")
             attempt = 0
             app.run_polling(drop_pending_updates=True)
             time.sleep(2)
